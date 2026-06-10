@@ -1,0 +1,115 @@
+from typing import Literal
+import pandas as pd
+from dataclasses import dataclass
+
+from hac.constants import CHALLENGE_DATA_DIR
+
+
+@dataclass(frozen=True, slots=True)
+class Dataset:
+    """
+    A class to represent a dataset of light curves for a specific model.
+
+    See: https://fips.fi/data-challenges/helsinki-asteroid-challenge-2026/
+    """
+
+    model_num: int  # The model number (1-10)
+    origin: Literal[
+        "real", "simulated"
+    ]  # Whether the data is from camera setup (real) or Blender simulation (simulated)
+    curve_type: Literal[
+        "binary", "intensity"
+    ]  # Whether the data is binary (0/1) or intensity (0-255)
+
+    data: pd.DataFrame  # The light curve data, with standardized index and columns
+
+    def melt_data_to_long(self) -> pd.DataFrame:
+        """
+        Melt the data from wide format to long format for use with seaborn.
+        """
+        long = (
+            self.data.reset_index()
+            .melt(id_vars="frame", var_name="camera", value_name="value")
+        )
+
+        long[["cam_angle", "cam_pos"]] = long["camera"].str.split("_", n=1, expand=True)
+        long["cam_angle"] = long["cam_angle"].astype(int)
+
+        long = long[["frame", "cam_angle", "cam_pos", "value"]]
+        return long
+
+
+def load_data(
+    model_num: int,
+    origin: Literal["real", "simulated"],
+    curve_type: Literal["binary", "intensity"],
+) -> Dataset:
+    _model_folder_suffix = "public" if model_num <= 3 else "secret"
+    model_folder_str = f"AsteroidModel{model_num:02d}_shape_{_model_folder_suffix}"
+
+    model_dir = CHALLENGE_DATA_DIR / model_folder_str
+    assert model_dir.is_dir(), (
+        f"Model data directory not found at {model_dir}. Run `.\\bin\\get_challenge_data.sh` to download it."
+    )
+
+    lightcurve_data_folder_str = f"Asteroid{model_num:d}_lightcurve_data"
+    lightcurve_data_dir = model_dir / lightcurve_data_folder_str
+    assert lightcurve_data_dir.is_dir(), (
+        f"Light curve data directory not found at {lightcurve_data_dir}. Run `.\\bin\\get_challenge_data.sh` to download it."
+    )
+
+    data_file_str = f"Asteroid{model_num:02d}_lightcurve_{curve_type}"
+    if origin == "simulated":
+        data_file_str += "_blender"
+
+    data_file_str += ".txt"
+
+    data_file_path = lightcurve_data_dir / data_file_str
+    assert data_file_path.is_file(), (
+        f"Data file not found at {data_file_path}. Run `.\\bin\\get_challenge_data.sh` to download it."
+    )
+
+    # Load the data into a Dataframe
+    data = pd.read_csv(data_file_path, header=None, index_col=0)
+
+    # Standardize index and columns according to https://fips.fi/data-challenges/helsinki-asteroid-challenge-2026/
+    data.index.name = "frame"
+    data = data.rename(
+        columns={
+            1: "0_hor1",
+            2: "0_hor2",
+            3: "0_top",
+            4: "0_bottom",
+            5: "45_hor1",
+            6: "45_hor2",
+            7: "45_top",
+            8: "45_bottom",
+            9: "90_hor1",
+            10: "90_hor2",
+            11: "90_top",
+            12: "90_bottom",
+            13: "135_hor1",
+            14: "135_hor2",
+            15: "135_top",
+            16: "135_bottom",
+            17: "225_hor1",
+            18: "225_hor2",
+            19: "225_top",
+            20: "225_bottom",
+            21: "270_hor1",
+            22: "270_hor2",
+            23: "270_top",
+            24: "270_bottom",
+            25: "315_hor1",
+            26: "315_hor2",
+            27: "315_top",
+            28: "315_bottom",
+        }
+    )
+
+    return Dataset(
+        model_num=model_num,
+        origin=origin,
+        curve_type=curve_type,
+        data=data,
+    )

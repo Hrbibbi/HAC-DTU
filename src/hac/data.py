@@ -21,6 +21,26 @@ def get_model_folder(model_num: int) -> Path:
     return model_dir
 
 
+def get_model_stl_path(model_num: int) -> Path:
+    """
+    Returns a Path object to the STL file containing the shape model for the specified model number.
+    """
+    if model_num > 3:
+        raise ValueError(
+            f"Model number {model_num} is a secret model and cannot be accessed."
+        )
+
+    model_dir = get_model_folder(model_num)
+
+    stl_file_str = f"asteroid{model_num:d}.stl"
+    stl_file_path = model_dir / stl_file_str
+    assert stl_file_path.is_file(), (
+        f"STL file not found at {stl_file_path}. Run `.\\bin\\get_challenge_data.sh` to download it."
+    )
+
+    return stl_file_path
+
+
 @dataclass(frozen=True, slots=True)
 class Dataset:
     """

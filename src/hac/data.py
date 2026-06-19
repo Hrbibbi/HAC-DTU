@@ -3,6 +3,22 @@ import pandas as pd
 from dataclasses import dataclass
 
 from hac.constants import CHALLENGE_DATA_DIR
+from pathlib import Path
+
+
+def get_model_folder(model_num: int) -> Path:
+    """
+    Returns a Path object to the folder containing the data for the specified model number.
+    """
+    _model_folder_suffix = "public" if model_num <= 3 else "secret"
+    model_folder_str = f"AsteroidModel{model_num:02d}_shape_{_model_folder_suffix}"
+
+    model_dir = CHALLENGE_DATA_DIR / model_folder_str
+    assert model_dir.is_dir(), (
+        f"Model data directory not found at {model_dir}. Run `.\\bin\\get_challenge_data.sh` to download it."
+    )
+
+    return model_dir
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,9 +43,8 @@ class Dataset:
         """
         Melt the data from wide format to long format for use with seaborn.
         """
-        long = (
-            self.data.reset_index()
-            .melt(id_vars="frame", var_name="camera", value_name="value")
+        long = self.data.reset_index().melt(
+            id_vars="frame", var_name="camera", value_name="value"
         )
 
         long[["cam_angle", "cam_pos"]] = long["camera"].str.split("_", n=1, expand=True)
@@ -44,13 +59,7 @@ def load_data(
     origin: Literal["real", "simulated"],
     curve_type: Literal["binary", "intensity"],
 ) -> Dataset:
-    _model_folder_suffix = "public" if model_num <= 3 else "secret"
-    model_folder_str = f"AsteroidModel{model_num:02d}_shape_{_model_folder_suffix}"
-
-    model_dir = CHALLENGE_DATA_DIR / model_folder_str
-    assert model_dir.is_dir(), (
-        f"Model data directory not found at {model_dir}. Run `.\\bin\\get_challenge_data.sh` to download it."
-    )
+    model_dir = get_model_folder(model_num)
 
     lightcurve_data_folder_str = f"Asteroid{model_num:d}_lightcurve_data"
     lightcurve_data_dir = model_dir / lightcurve_data_folder_str

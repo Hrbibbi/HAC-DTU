@@ -8,6 +8,8 @@ The data is too large to comfortably fit within the Git repository, but can be d
 ./bin/get_challenge_data.sh
 ```
 
-## Contributor TODO
+## Contributor Information
 
 - Add yourself as an author in `pyproject.toml`.
+- Create a folder for your own experiments in `workspaces/YOUR_NAME`
+- Contribute relevant bits to the common library in `src/hac`

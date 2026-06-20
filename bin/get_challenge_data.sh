@@ -1,4 +1,12 @@
 #!/bin/bash
+set -euo pipefail
+
+# Ensure unzip exists
+if ! command -v unzip >/dev/null 2>&1; then
+  echo "unzip is not installed. Installing it now..."
+  sudo apt update
+  sudo apt install -y unzip
+fi
 
 SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd -P)"
 PROJECT_ROOT="$(CDPATH= cd "$SCRIPT_DIR/.." && pwd -P)"

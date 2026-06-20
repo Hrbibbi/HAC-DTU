@@ -2,7 +2,7 @@ from typing import Literal
 import pandas as pd
 from dataclasses import dataclass
 
-from hac.constants import CHALLENGE_DATA_DIR
+from hac.constants import CHALLENGE_DATA_DIR, DSDIR_ENV_VAR
 from pathlib import Path
 
 
@@ -14,9 +14,11 @@ def get_model_folder(model_num: int) -> Path:
     model_folder_str = f"AsteroidModel{model_num:02d}_shape_{_model_folder_suffix}"
 
     model_dir = CHALLENGE_DATA_DIR / model_folder_str
-    assert model_dir.is_dir(), (
-        f"Model data directory not found at {model_dir}. Run `.\\bin\\get_challenge_data.sh` to download it."
-    )
+    if not model_dir.is_dir():
+        raise FileNotFoundError(
+            f"Model data directory not found at {model_dir}. "
+            f"Ensure {DSDIR_ENV_VAR} points to a valid dataset root and run ./bin/get_challenge_data.sh."
+        )
 
     return model_dir
 
@@ -34,9 +36,11 @@ def get_model_stl_path(model_num: int) -> Path:
 
     stl_file_str = f"asteroid{model_num:d}.stl"
     stl_file_path = model_dir / stl_file_str
-    assert stl_file_path.is_file(), (
-        f"STL file not found at {stl_file_path}. Run `.\\bin\\get_challenge_data.sh` to download it."
-    )
+    if not stl_file_path.is_file():
+        raise FileNotFoundError(
+            f"STL file not found at {stl_file_path}. "
+            f"Ensure {DSDIR_ENV_VAR} points to a valid dataset root and run ./bin/get_challenge_data.sh."
+        )
 
     return stl_file_path
 
@@ -83,9 +87,11 @@ def load_data(
 
     lightcurve_data_folder_str = f"Asteroid{model_num:d}_lightcurve_data"
     lightcurve_data_dir = model_dir / lightcurve_data_folder_str
-    assert lightcurve_data_dir.is_dir(), (
-        f"Light curve data directory not found at {lightcurve_data_dir}. Run `.\\bin\\get_challenge_data.sh` to download it."
-    )
+    if not lightcurve_data_dir.is_dir():
+        raise FileNotFoundError(
+            f"Light curve data directory not found at {lightcurve_data_dir}. "
+            f"Ensure {DSDIR_ENV_VAR} points to a valid dataset root and run ./bin/get_challenge_data.sh."
+        )
 
     data_file_str = f"Asteroid{model_num:02d}_lightcurve_{curve_type}"
     if origin == "simulated":
@@ -94,9 +100,11 @@ def load_data(
     data_file_str += ".txt"
 
     data_file_path = lightcurve_data_dir / data_file_str
-    assert data_file_path.is_file(), (
-        f"Data file not found at {data_file_path}. Run `.\\bin\\get_challenge_data.sh` to download it."
-    )
+    if not data_file_path.is_file():
+        raise FileNotFoundError(
+            f"Data file not found at {data_file_path}. "
+            f"Ensure {DSDIR_ENV_VAR} points to a valid dataset root and run ./bin/get_challenge_data.sh."
+        )
 
     # Load the data into a Dataframe
     data = pd.read_csv(data_file_path, header=None, index_col=0)

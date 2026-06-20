@@ -1,7 +1,7 @@
 import numpy as np
 from stl import mesh
 import matplotlib.pyplot as plt
-from hac.data import load_data
+from hac.data import get_model_stl_path, load_data
 import argparse
 import os
 from concurrent.futures import ProcessPoolExecutor
@@ -229,7 +229,7 @@ if __name__ == "__main__":
         "315_bottom": -24,
     }
 
-    stl_path = f"/zhome/95/1/155570/HAC-DTU/challenge_data/AsteroidModel0{args.asteroid}_shape_public/asteroid{args.asteroid}.stl"
+    stl_path = str(get_model_stl_path(args.asteroid))
     ds_real = load_data(args.asteroid, "real", "intensity")
     ds_blender = load_data(args.asteroid, "simulated", "intensity")
     e_sun = np.array([-1.0, 0.0, 0.0])

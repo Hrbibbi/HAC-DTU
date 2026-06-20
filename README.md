@@ -4,6 +4,14 @@ This repostiory contains submission(s) to the Helsinki Asteroid Challenge by the
 
 The data is too large to comfortably fit within the Git repository.
 
+## Developer Guide
+- Implement things that have common use in the library at `src/hac/`
+    - Try to keep this relatively neat and use pull requests for any controversial changes
+- If you have your own experiments and notebooks, these are best placed in a workspace under `workspaces/`
+    - See [below](#contributor-information)
+- Add dependencies and manage environment via `uv` to make sure everyone gets working setups
+- Run `uv run ruff format .` prior to commiting (or `just format`, see [Development Tasks](#development-tasks))
+
 ## Dataset Setup
 
 By default, challenge data is read from `challenge_data` in the project root.
@@ -28,7 +36,7 @@ The script can be run from any directory and will download and extract data into
 [`just`](https://just.systems/) is an optional, convenient task runner for common project commands. All tasks can still be run directly without `just`.
 
 - `just`: List available targets.
-- `just format`: Format Python files with Ruff (strongly recommended before commiting).
+- `just format`: Format Python files with Ruff (please run before commiting!).
 
 ## Contributor Information
 

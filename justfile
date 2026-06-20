@@ -4,4 +4,4 @@ default:
 
 # Format Python files with Ruff.
 format:
-    uv run --with ruff ruff format .
+    uv run ruff format .

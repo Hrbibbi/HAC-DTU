@@ -23,6 +23,7 @@ dependencies = [
 dev = [
     "ipykernel<7",
     "marimo>=0.23.10",
+    "ruff>=0.15.18",
 ]
 
 [build-system]

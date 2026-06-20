@@ -6,21 +6,22 @@ The data is too large to comfortably fit within the Git repository.
 
 ## Dataset Setup
 
-The dataset root is configured through the `DSDIR` environment variable. This variable is required by the Python code and by dataset scripts.
+By default, challenge data is read from `challenge_data` in the project root.
 
-Set `DSDIR` to the directory where model folders (for example `AsteroidModel01_shape_public`) should live:
-
-```sh
-export DSDIR="/path/to/challenge_data"
-```
-
-After setting `DSDIR`, download the dataset with:
+Download the dataset with:
 
 ```sh
 ./bin/get_challenge_data.sh
 ```
 
-The script can be run from any directory and will download and extract data into `DSDIR`.
+To store the data outside the repository, set `DSDIR` to the directory where `challenge_data` should live:
+
+```sh
+export DSDIR="/path/to/data"
+./bin/get_challenge_data.sh
+```
+
+The script can be run from any directory and will download and extract data into the resolved `challenge_data` directory.
 
 ## Contributor Information
 

@@ -4,8 +4,8 @@ Meshing utilities using `trimesh`.
 We need conversion from STL to OBJ if we use Mitsuba.
 """
 
-
 from pathlib import Path
+
 import trimesh
 
 

@@ -2,8 +2,8 @@
 Implements the lightcurve integration methods outlined in the challenge description.
 """
 
-from skimage.filters import threshold_otsu
 import numpy as np
+from skimage.filters import threshold_otsu
 
 
 def binary(image) -> float:

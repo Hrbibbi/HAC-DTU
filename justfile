@@ -4,5 +4,5 @@ default:
 
 # Format Python files with Ruff.
 format:
-    uv run ruff check --select I --fix .
-    uv run ruff format .
+    uv run ruff check --select I --fix --exclude "*.ipynb" .
+    uv run ruff format --exclude "*.ipynb" .

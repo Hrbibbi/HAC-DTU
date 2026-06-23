@@ -1,9 +1,10 @@
-from typing import Literal
-import pandas as pd
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+import pandas as pd
 
 from hac.constants import CHALLENGE_DATA_DIR
-from pathlib import Path
 
 
 def get_model_folder(model_num: int) -> Path:

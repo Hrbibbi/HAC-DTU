@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from collections.abc import Sequence
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 DSDIR_ENV_VAR = "DSDIR"
@@ -51,3 +52,34 @@ CAMERA_ANGLE_ALPHA: dict[str, float] = {
     "315_top": 24.0,
     "315_bottom": -26.0,
 }
+
+BASE_RADII = [1.12, 1.42, 0.88, 1.475, 1.22, 0.925, 1.205, 1.24, 0.67, 3.95]
+
+class NamedAngleSequence(Sequence):
+    def __init__(self, names: list[str], values: list[float | int]):
+        self.names = names
+        self.values = values
+        self.by_name = dict(zip(names, values))
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            return self.by_name[key]
+        return self.values[key]
+
+    def __len__(self):
+        return len(self.values)
+
+
+POSITION_IDS = list(CAMERA_ANGLE_ALPHA.keys())
+
+XY_ANGLES = NamedAngleSequence(
+    POSITION_IDS,
+    [int(position_id.split("_", 1)[0]) for position_id in POSITION_IDS],
+)
+
+ELEV_ANGLES = NamedAngleSequence(
+    POSITION_IDS,
+    [CAMERA_ANGLE_ALPHA[position_id] for position_id in POSITION_IDS],
+)
+
+INTENSITY_CURVE_THRESHOLD = 25.5

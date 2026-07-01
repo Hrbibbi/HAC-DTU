@@ -153,7 +153,7 @@ def generate_challenge_lightcurve(
     The lightcurve is normalized like described on the challenge website.
 
     If sim_root is provided, saves the lightcurve as:
-        sim_root / model_XX / model_XX_<cam_idx>_lightcurve.npy
+        sim_root / model_<model_num> / cam_<cam_idx>.npy
     """
     stl_path = get_model_stl_path(model_num)
     mesh = pv.read(stl_path)

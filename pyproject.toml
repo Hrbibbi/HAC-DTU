@@ -5,7 +5,8 @@ description = "Code related to the Helsinki Asteroid Challenge submissions by th
 readme = "README.md"
 authors = [
     { name = "Jeppe Klitgaard", email = "hi@jeppe.science" },
-    { name = "Ishak Ayad", email = "ishak.ayad@centralesupelec.fr" }
+    { name = "Ishak Ayad", email = "ishak.ayad@centralesupelec.fr" },
+    { name = "Christian Deding Nielsen", email = "cadni@dtu.dk"}
 ]
 requires-python = ">=3.14"
 dependencies = [
@@ -19,6 +20,7 @@ dependencies = [
     "seaborn>=0.13.2",
     "trimesh>=4.12.2",
     "rtree",
+    "cupy>=13.6.0"
 ]
 
 [dependency-groups]

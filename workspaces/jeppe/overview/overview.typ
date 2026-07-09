@@ -39,12 +39,13 @@ $
 
 So the geometry is set up as:
 - Cartesian coordinates $(x, y, z)$
-- Angle between observer and $x$-axis given by $θ$
-- Angle between observer and $y$-axis, _"elevation angle"_, given by $α$
+- Measurement angle $θ$ is the direction of view in the $x y$-plane, as labelled in the top-view figure. Thus $θ = 0°$ means the camera looks along $+x$ and is placed on the $-x$ side of the asteroid.
+- Elevation angle $α$ is the angle above the $x y$-plane. Positive $α$ places the camera at positive $z$.
 
 Thus we have objects:
-- Sun at $vv(r)_"sun" = (-∞, 0, 0)$ with direction $vvh(E)_"sun" = (1, 0, 0)$
-- Observer at $vv(r)_"obs" = (r_"obs" cos(θ) cos(α), r_"obs" sin(θ) cos(α), r_"obs" sin(α))$ with direction $vvh(E)_"obs" = (sin(θ) cos(α), -cos(θ) cos(α), -sin(α))$
+- Sun at $vv(r)_"sun" = (-∞, 0, 0)$ with direction toward the Sun $vvh(E)_"sun" = (-1, 0, 0)$. The light travels in the opposite direction, along $+x$.
+- Observer at $vv(r)_"obs" = r_"obs" (-cos(θ) cos(α), -sin(θ) cos(α), sin(α))$ with direction toward the observer $vvh(E)_"obs" = (-cos(θ) cos(α), -sin(θ) cos(α), sin(α))$
+  - The optical/view direction from the observer to the asteroid is the opposite vector, $(cos(θ) cos(α), sin(θ) cos(α), -sin(α))$.
   - Where $r_"obs"$ is assumed to be sufficiently large that the asteroid observed approximately as its orthographic projection.
 
 = Ray-Tracing <sec:ray_tracing>

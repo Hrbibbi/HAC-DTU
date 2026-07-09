@@ -46,8 +46,8 @@ def make_scene(
     observer_position = (
         np.asarray(
             [
-                np.cos(theta_rad) * np.cos(alpha_rad),
-                np.sin(theta_rad) * np.cos(alpha_rad),
+                -np.cos(theta_rad) * np.cos(alpha_rad),
+                -np.sin(theta_rad) * np.cos(alpha_rad),
                 np.sin(alpha_rad),
             ]
         )

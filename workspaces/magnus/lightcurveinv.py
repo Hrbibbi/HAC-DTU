@@ -52,38 +52,6 @@ def mixed_lommel_lambert(mu0, mu, c=0.1, eps=1e-12):
     lambert = mu0 * mu
     return ls + c * lambert
 
-'''def ray_triangle_intersection(origin, direction, v0, v1, v2, eps=1e-10):
-
-    edge1 = v1 - v0
-    edge2 = v2 - v0
-
-    h = np.cross(direction, edge2)
-    a = edge1 @ h
-
-    if abs(a) < eps:
-        return None
-
-    f = 1.0 / a
-
-    s = origin - v0
-    u = f * (s @ h)
-
-    if u < 0.0 or u > 1.0:
-        return None
-
-    q = np.cross(s, edge1)
-    v = f * (direction @ q)
-
-    if v < 0.0 or u + v > 1.0:
-        return None
-
-    t = f * (edge2 @ q)
-
-    if t > eps:
-        return t
-
-    return None'''
-
 @njit(cache=True, fastmath=True)
 def ray_triangle_intersection(origin, direction, v0, v1, v2, eps=1e-10):
 
@@ -214,6 +182,7 @@ class LCResult:
     faces: np.ndarray
     residuals: np.ndarray
     model_flux: np.ndarray
+    parameters: np.ndarray
     success: bool
     message: str
     cost: float
@@ -517,6 +486,223 @@ class LightcurveInverter:
             self,
             sh_degree=6,
             sh_order=6,
+            init_shape=None, # tuple of (vertices, faces) for initial convex shape containing origo
+            phase0=0.0,
+            max_nfev=500,
+            verbose=0,
+            shape_penalty=None,
+            sparsity_regularization=None,
+            cylinder_radius=None,
+            include_l00=False, # if shape penalty is not none then must be True
+            ftol=None
+        ):
+        """Fit spherical harmonic coefficients for radii."""
+        self.sh_basis = build_sh_basis(
+            self.theta, self.phi, 
+            sh_degree, sh_order, include_l00
+        )
+        
+        ncoef = self.sh_basis.shape[1]
+        print(f"Fitting {ncoef} spherical harmonic coefficients")
+        if init_shape is None:
+            c_init = np.zeros(ncoef) # initial spherical harmonic coefficients
+            if include_l00:
+                c_init[0] = np.log(1.0)
+        else:
+            init_vertices, init_faces = init_shape
+            normals = []
+            offset = []
+            for i in range(len(init_faces)):
+                v0 = init_vertices[init_faces[i][0]]
+                v1 = init_vertices[init_faces[i][1]]
+                v2 = init_vertices[init_faces[i][2]]
+                n = np.cross(v1 - v0, v2 - v0)
+                n /= np.linalg.norm(n)
+                h = np.dot(n, v0)
+                normals.append(n)
+                offset.append(h)
+            normals = np.array(normals)
+            offset = np.array(offset)
+            denom = self.vertex_normalized @ normals.T 
+            t = np.full_like(denom, np.inf)
+            np.divide(
+                offset[None, :],
+                denom,
+                out=t,
+                where=denom > 1e-6
+            )
+            radii = np.min(t, axis=1)
+            g_init = np.log(radii)
+            c_init, _, _, _ = np.linalg.lstsq(self.sh_basis, g_init, rcond=None)
+
+        # precompute rotation matrices for each epoch
+        self.rotations = []
+        for t in self.times:
+            angle = 2.0 * np.pi * t / self.period + phase0
+            rot = rotation_about_z(angle)
+            self.rotations.append(rot)
+        
+        def spherical_harmonic_to_shape(c):
+
+            g = self.sh_basis @ c
+
+            radii = np.exp(g)
+
+            self.vertices = self.vertex_normalized * radii[:, None]
+
+            drdc = radii[:, None] * self.sh_basis
+            self.dvdc = self.vertex_normalized[:, :, None] * drdc[:, None, :]
+
+            return 
+        
+        if init_shape is not None:
+            spherical_harmonic_to_shape(c_init)
+            self.write_to_file("initial_shape")
+        
+        def residual_function(c):
+            residuals = []
+
+            # check cache
+            if self.cache['c'] is not None and np.array_equal(c, self.cache['c']):
+                model_flux = self.cache['model_flux']
+                if shape_penalty is not None:
+                    spherical_harmonic_to_shape(c) # for use in penalty residuals
+            else:
+                # update vertices from spherical harmonic coefficients
+                spherical_harmonic_to_shape(c)
+                model_flux, jac = self.brightness_and_jacobian()
+                self.cache['c'] = c.copy()
+                self.cache['model_flux'] = model_flux.copy()
+                self.cache['jac'] = jac.copy()
+
+            data_resid = (model_flux - self.flux).ravel()
+            residuals.append(data_resid)
+
+            if shape_penalty is not None:
+                # add shape penalty to residuals
+                if cylinder_radius is None:
+                    raise ValueError("cylinder_radius must be provided for shape_penalty")
+                # projections of vertices onto z-axis and radius in xy-plane
+                vz = self.vertices[:, 2]
+                vr = np.linalg.norm(self.vertices[:, :2], axis=1)
+                height = soft_max(vz) - soft_min(vz)
+                penalty = [
+                    np.sqrt(shape_penalty) * (height - 2),
+                    np.sqrt(shape_penalty) * (soft_max(vr) - cylinder_radius)
+                ]
+                residuals.append(penalty)
+
+            if sparsity_regularization is not None:
+                # add sparsity regularization to residuals
+                sparsity_penalty = np.sqrt(sparsity_regularization) * np.abs(c)
+                residuals.append(sparsity_penalty)
+
+            return np.concatenate(residuals)
+        
+        def jacobian_function(c):
+            Jacs = []
+            # check cache
+            if self.cache['c'] is not None and np.array_equal(c, self.cache['c']):
+                jac = self.cache['jac']
+                if shape_penalty is not None:
+                    spherical_harmonic_to_shape(c) # for use in penalty jacobian
+            else:
+                # update vertices from spherical harmonic coefficients
+                spherical_harmonic_to_shape(c)
+                model_flux, jac = self.brightness_and_jacobian()
+                self.cache['c'] = c.copy()
+                self.cache['model_flux'] = model_flux.copy()
+                self.cache['jac'] = jac.copy()
+
+            data_jac = jac.reshape(-1, ncoef)
+            Jacs.append(data_jac)
+
+            if shape_penalty is not None:
+                eps = 1e-6
+
+                penalty_jac = np.zeros((2, ncoef))
+
+                for k in range(ncoef):
+
+                    cp = c.copy()
+                    cm = c.copy()
+
+                    cp[k] += eps
+                    cm[k] -= eps
+
+                    # ----- plus perturbation -----
+
+                    spherical_harmonic_to_shape(cp)
+
+                    vz = self.vertices[:, 2]
+                    vr = np.linalg.norm(self.vertices[:, :2], axis=1)
+
+                    hp = soft_max(vz) - soft_min(vz)
+                    rp = soft_max(vr)
+
+                    # ----- minus perturbation -----
+
+                    spherical_harmonic_to_shape(cm)
+
+                    vz = self.vertices[:, 2]
+                    vr = np.linalg.norm(self.vertices[:, :2], axis=1)
+
+                    hm = soft_max(vz) - soft_min(vz)
+                    rm = soft_max(vr)
+
+                    penalty_jac[0, k] = (
+                        np.sqrt(shape_penalty)
+                        * (hp - hm)
+                        / (2 * eps)
+                    )
+
+                    penalty_jac[1, k] = (
+                        np.sqrt(shape_penalty)
+                        * (rp - rm)
+                        / (2 * eps)
+                    )
+
+                # restore original shape
+                spherical_harmonic_to_shape(c)
+                Jacs.append(penalty_jac)
+
+            if sparsity_regularization is not None:
+                sparsity_jac = np.sqrt(sparsity_regularization) * np.diag(np.sign(c))
+                Jacs.append(sparsity_jac)
+            
+            J = np.vstack(Jacs)
+            return J
+
+        if ftol is None: ftol = 1e-8
+        sol = least_squares(fun=residual_function, x0=c_init, jac=jacobian_function, method="trf", max_nfev=max_nfev, ftol=ftol, verbose=verbose)
+        
+        # Find final shape
+        g = self.sh_basis @ sol.x
+        radii = np.exp(g)
+        if not include_l00:
+            radii /= np.mean(radii)
+        self.vertices = self.vertex_normalized * radii[:, None]
+        if shape_penalty is not None:
+            # check shape constraints
+            vz = self.vertices[:, 2]
+            vr = np.linalg.norm(self.vertices[:, :2], axis=1)
+            print(f"Bounding cylinder [{np.min(vz):.3f}, {np.max(vz):.3f}] x radius {np.max(vr):.3f}")
+        
+        model_flux, _ = self.brightness_and_jacobian()
+
+        return LCResult(
+            vertices=self.vertices,
+            faces=self.faces,
+            residuals=model_flux - self.flux,
+            model_flux=model_flux,
+            parameters=sol.x,
+            success=sol.success,
+            message=sol.message,
+            cost=sol.cost,
+        )
+    
+    '''def fit_radii_direct(
+            self,
             phase0=0.0,
             max_nfev=500,
             verbose=0,
@@ -525,27 +711,15 @@ class LightcurveInverter:
             include_l00=False,
             ftol=None
         ):
-        """Fit spherical harmonic coefficients for radii."""
-        self.sh_basis = build_sh_basis(
-            self.theta, self.phi, 
-            sh_degree, sh_order, include_l00
-        )
-        ncoef = self.sh_basis.shape[1]
-        print(f"Fitting {ncoef} spherical harmonic coefficients")
-        c_init = np.zeros(ncoef) # initial spherical harmonic coefficients
-        if include_l00:
-            c_init[0] = np.log(1.0)
 
         # precompute rotation matrices for each epoch
         self.rotations = []
         for t in self.times:
             angle = 2.0 * np.pi * t / self.period + phase0
-            rot = rotation_about_z(-angle)
+            rot = rotation_about_z(angle)
             self.rotations.append(rot)
         
-        def spherical_harmonic_to_shape(c):
-
-            g = self.sh_basis @ c
+        def logradii_to_shape(g):
 
             radii = np.exp(g)
 
@@ -683,6 +857,4 @@ class LightcurveInverter:
             success=sol.success,
             message=sol.message,
             cost=sol.cost,
-        )
-
-   
+        )'''

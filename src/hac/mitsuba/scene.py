@@ -78,7 +78,7 @@ def make_scene(
                     "width": rendering_settings.width,
                     "height": rendering_settings.height,
                     "rfilter": {
-                        "type": "box"
+                        "type": "gaussian",
                     },  # Should probably be changed, see: https://mitsuba.readthedocs.io/en/stable/src/generated/plugins_rfilters.html
                 },
             },

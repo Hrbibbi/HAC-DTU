@@ -24,6 +24,16 @@ dependencies = [
     "trimesh>=4.12.2",
 ]
 
+### Custom Mitsuba Configuration
+# Comment out this if you want to use stock Mitsuba
+# Note that this takes a _really_ long time to compile
+# Consider running with `uv sync -v` to see the build output
+[tool.uv]
+config-settings-package = { mitsuba = { "cmake.define.MI_DEFAULT_VARIANTS" = "scalar_rgb,scalar_mono,cuda_ad_mono,llvm_ad_mono" } }
+
+[tool.uv.sources]
+mitsuba = { path = "vendored/mitsuba3" }
+### End Custom Mitsuba Configuration
 
 [dependency-groups]
 dev = [

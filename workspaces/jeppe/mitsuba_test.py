@@ -8,137 +8,98 @@ app = marimo.App()
 def _():
     import mitsuba as mi
     import numpy as np
+    import drjit as dr
 
     import matplotlib.pyplot as plt
+    import imageio_ffmpeg
 
     from hac.data import get_model_stl_path
+    from hac.constants import OBSERVERS
 
-    return get_model_stl_path, mi, np, plt
+    import marimo as mo
+
+    return OBSERVERS, get_model_stl_path, imageio_ffmpeg, mi, mo, np, plt
 
 
 @app.cell
-def _(get_model_stl_path):
+def _(OBSERVERS, imageio_ffmpeg, plt):
+    # Setup
+    plt.rcParams["animation.ffmpeg_path"] = imageio_ffmpeg.get_ffmpeg_exe()
+
+    MODEL_NUM = 3
+    EXPERIMENT = "0_hor1"
+    OBSERVER = OBSERVERS[EXPERIMENT]
+    return EXPERIMENT, MODEL_NUM, OBSERVER
+
+
+@app.cell
+def _(MODEL_NUM, get_model_stl_path):
     # Load
-    model_stl_path = get_model_stl_path(3)
+    model_stl_path = get_model_stl_path(model_num=MODEL_NUM)
     return (model_stl_path,)
 
 
 @app.cell
-def _():
-    # mi.set_variant("scalar_rgb")
-
-    # # Check mesh bounds first
-    # print(f"Mesh bounds: {m.bounds}")
-    # print(f"Mesh centroid: {m.centroid}")
-    # print(f"Mesh extents: {m.extents}")
-
-    # # Auto-scale based on mesh size
-    # mesh_size = max(m.extents)
-    # camera_distance = mesh_size * 2.5
-
-    # scale = 1.0
-    # s = mi.load_dict(
-    #     {
-    #         "type": "scene",
-    #         "integrator": {"type": "path"},
-    #         "sensor": {
-    #             "type": "perspective",
-    #             "to_world": mi.ScalarTransform4f.look_at(
-    #                 origin=[0.0, -camera_distance, camera_distance * 0.5],
-    #                 target=[0.0, 0.0, 0.0],
-    #                 up=[0.0, 0.0, 1.0],
-    #             ),
-    #             "fov": 35,
-    #             "sampler": {
-    #                 "type": "independent",
-    #                 "sample_count": 32,
-    #             },
-    #             "film": {
-    #                 "type": "hdrfilm",
-    #                 "width": 512,
-    #                 "height": 512,
-    #                 "rfilter": {"type": "box"},
-    #             },
-    #         },
-    #         "sun": {
-    #             "type": "directional",
-    #             "direction": [-1.0, -1.0, -1.0],
-    #             "irradiance": {
-    #                 "type": "rgb",
-    #                 "value": 5.0,
-    #             },
-    #         },
-    #         "asteroid": {
-    #             "type": "obj",
-    #             "filename": str(model_obj_path),
-    #             "face_normals": False,
-    #             "to_world": mi.ScalarTransform4f.scale([scale, scale, scale]),
-    #             "bsdf": {
-    #                 "type": "roughplastic",
-    #                 "diffuse_reflectance": {
-    #                     "type": "rgb",
-    #                     "value": [0.45, 0.42, 0.38],
-    #                 },
-    #                 "alpha": 0.6,
-    #             },
-    #         },
-    #     }
-    # )
-
-    # print("Rendering scene...")
-    # img = mi.render(s)
-    # print(f"Render complete. Image shape: {img.shape}")
-
-    # fig = plt.figure(figsize=(8, 8))
-    # plt.axis("off")
-    # plt.imshow(mi.util.convert_to_bitmap(img))
-    # plt.tight_layout()
-
-    # fig  # Return the figure for Marimo to display
-    return
-
-
-@app.cell
-def _(mi, model_stl_path, np):
+def _(OBSERVER, mi, model_stl_path, np):
     from hac.mitsuba import make_scene
     from hac.mitsuba import MitsubaMesh, RenderingSettings
 
     m = MitsubaMesh.from_stl_path(model_stl_path)
-
-    # sun_direction = np.asarray([-1.0, -1.0, -1.0])
-    camera_vector = np.asarray([0.0, -1.0, 0.5])
-    camera_distance = 100.0
 
     width, height = 128, 128
     ssp = 32  # Number of samples per pixel
 
     rendering_settings = RenderingSettings(width=width, height=height, spp=32)
 
-    theta = 180.0
-    alpha = 0.0
     phi = 0.0
-    observer_distance = 1.0
-
-    mi.set_variant("scalar_rgb")  # Need to recompile mitsuba to get scalar_mono
+    mi.set_variant("scalar_mono")  # Need to recompile mitsuba to get scalar_mono
     scene = make_scene(
         mesh=m,
-        theta=theta,
-        alpha=alpha,
+        theta=OBSERVER.theta,
+        alpha=OBSERVER.alpha,
         phi=phi,
-        observer_distance=observer_distance,
-        asteroid_scale=0.2,
+        observer_distance=OBSERVER.r_obs,
+        asteroid_scale=0.2,  # TODO set dynamically
         rendering_settings=rendering_settings,
         albedo=1.0,
-        # sun_direction=sun_direction,
     )
 
     params = mi.traverse(scene)
+
+    base_vertex_positions = (
+        np.asarray(params["asteroid.vertex_positions"]).reshape(-1, 3).copy()
+    )
+    base_vertex_normals = (
+        np.asarray(params["asteroid.vertex_normals"]).reshape(-1, 3).copy()
+    )
+
+
+    def rotate_about_minus_z(values, angle_deg):
+        angle = np.radians(-angle_deg)
+        cos_angle = np.cos(angle)
+        sin_angle = np.sin(angle)
+        rotated = values.copy()
+        x = values[:, 0]
+        y = values[:, 1]
+        rotated[:, 0] = cos_angle * x - sin_angle * y
+        rotated[:, 1] = sin_angle * x + cos_angle * y
+        return rotated.reshape(-1)
+
+
+    def set_asteroid_phi(phi):
+        params["asteroid.vertex_positions"] = rotate_about_minus_z(
+            base_vertex_positions, phi
+        )
+        params["asteroid.vertex_normals"] = rotate_about_minus_z(base_vertex_normals, phi)
+        params.update()
+
+
     params
-    return m, make_scene, observer_distance, rendering_settings, scene, theta
+    return scene, set_asteroid_phi
 
 
 @app.cell
-def _(mi, plt, scene):
+def _(mi, plt, scene, set_asteroid_phi):
     def render_scene(
         scene: mi.Scene,
     ):
@@ -161,6 +122,7 @@ def _(mi, plt, scene):
         return ax
 
 
+    set_asteroid_phi(0.0)
     img = render_scene(scene)
     ax = display_rendering(img)
 
@@ -169,32 +131,20 @@ def _(mi, plt, scene):
 
 
 @app.cell
-def _(m, make_scene, np, observer_distance, rendering_settings, theta):
+def _(np):
     # Render a little movie
-    alpha_anim = 0.0
     N_PHI = 360
     phis_anim = np.linspace(0, 360, N_PHI)
-
-    scenes = [
-        make_scene(
-            mesh=m,
-            theta=theta,
-            alpha=alpha_anim,
-            phi=phi,
-            observer_distance=observer_distance,
-            asteroid_scale=0.2,
-            rendering_settings=rendering_settings,
-            albedo=1.0,
-        )
-        for phi in phis_anim
-    ]
-    return (scenes,)
+    return (phis_anim,)
 
 
 @app.cell
-def _(render_scene, scenes):
-    # Render scenes
-    renders = [render_scene(scene) for scene in scenes]
+def _(phis_anim, render_scene, scene, set_asteroid_phi):
+    # Render frames by mutating the single loaded Mitsuba scene.
+    renders = []
+    for phi_ in phis_anim:
+        set_asteroid_phi(phi_)
+        renders.append(render_scene(scene))
     return (renders,)
 
 
@@ -205,25 +155,36 @@ def _(mi, renders):
 
 
 @app.cell
-def _(bitmaps):
-    # display_rendering(renders[100])
-    type(bitmaps[100])
+def _(bitmaps, mo, np, plt):
+    # Animation for rotating asteroid (notebook-friendly)
+    from matplotlib.animation import FuncAnimation
+    from IPython.display import HTML
 
-    bitmaps[100].pixel_format()
+    # Convert Mitsuba renders to RGB bitmaps (uint8 HxWx3)
 
-    return
-
-
-@app.cell
-def _(bitmaps):
-    bitmaps[100]
-    return
+    fig, ax_anim = plt.subplots(figsize=(6, 6))
+    ax_anim.axis("off")
+    im = ax_anim.imshow(np.asarray(bitmaps[0]))
 
 
-@app.cell
-def _(bitmaps, np, plt):
-    a = np.asarray(bitmaps[100])
-    plt.imshow(a)
+    def update(frame):
+        im.set_data(np.asarray(bitmaps[frame]))
+        return (im,)
+
+
+    anim = FuncAnimation(
+        fig,
+        update,
+        frames=len(bitmaps),
+        blit=True,
+        repeat=True,
+    )
+    anim.save("asteroid_rotation.mp4", writer="ffmpeg", fps=len(bitmaps) // 10)
+
+
+    vid = HTML(anim.to_html5_video())
+    # mo.Html(vid)
+    mo.video("asteroid_rotation.mp4")
     return
 
 
@@ -234,7 +195,24 @@ def _(mi, np, renders):
     lightcurve = [
         intensity(np.asarray(mi.util.convert_to_bitmap(render))) for render in renders
     ]
-    return (lightcurve,)
+    return intensity, lightcurve
+
+
+@app.cell
+def _(intensity, mi, np, renders):
+    # Try DrJit
+    def intensity_from_render(render):
+        """
+        Compute the intensity of a rendered image using DrJit.
+        """
+        # Convert the Mitsuba render to a DrJit array
+        bitmap = mi.util.convert_to_bitmap(render)
+
+        return intensity(np.asarray(bitmap))
+
+
+    intensity_from_render(renders[0])
+    return
 
 
 @app.cell
@@ -244,20 +222,15 @@ def _(lightcurve, np):
 
 
 @app.cell
-def _(lightcurve_normalised, plt):
+def _(EXPERIMENT, MODEL_NUM, lightcurve_normalised, plt):
     from hac.data import load_data
 
-    ds = load_data(model_num=3, origin="simulated", curve_type="intensity")
-    ds = load_data(model_num=3, origin="simulated", curve_type="intensity")
+    ds = load_data(model_num=MODEL_NUM, origin="simulated", curve_type="intensity")
+    ds = load_data(model_num=MODEL_NUM, origin="simulated", curve_type="intensity")
 
     plt.plot(lightcurve_normalised, label="Mitsuba simulation")
-    plt.plot(ds.data["0_hor1"], label="HAC simulation")
-    return
-
-
-@app.cell
-def _(lightcurve, plt):
-    plt.plot(lightcurve)
+    plt.plot(ds.data[EXPERIMENT], label="HAC simulation")
+    plt.legend()
     return
 
 

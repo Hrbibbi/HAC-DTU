@@ -307,7 +307,7 @@ requires-dist = [
     { name = "imageio-ffmpeg", specifier = ">=0.6.0" },
     { name = "jax", specifier = ">=0.10.1" },
     { name = "matplotlib", specifier = ">=3.10.9" },
-    { name = "mitsuba", specifier = ">=3.8.0" },
+    { name = "mitsuba", directory = "vendored/mitsuba3" },
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "numpy-stl", extras = ["fast"], specifier = ">=4.0.0" },
     { name = "rtree", specifier = ">=1.4.1" },
@@ -672,20 +672,15 @@ wheels = [
 
 [[package]]
 name = "mitsuba"
-version = "3.9.0"
-source = { registry = "https://pypi.org/simple" }
+source = { directory = "vendored/mitsuba3" }
 dependencies = [
     { name = "drjit" },
 ]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/cb/d9/b6fde375bc8b13be1ecd36e43c64d0f4387a01f1717dbdd5edc0bb842e09/mitsuba-3.9.0-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:ef117c62711a05dc99d226212f760f7fceab18280626ab09bb6a81c64f70917d", size = 52363098, upload-time = "2026-06-26T04:02:02.209Z" },
-    { url = "https://files.pythonhosted.org/packages/30/20/09a28a3f5a0d0f51a11d2308175dde2cc2efa7b92a36d66dfdee64c03da2/mitsuba-3.9.0-cp312-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:c6e2f518c1c1d47959255a336c35483433658f02dbcd63f349ed65ec9bdf6bad", size = 54112613, upload-time = "2026-06-26T04:02:12.182Z" },
-    { url = "https://files.pythonhosted.org/packages/cd/d5/f4144fba7fa2c06dafe07fefdc3b85085d71e5bd2fab6c8a81fa9345d1fa/mitsuba-3.9.0-cp312-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:29b034b93d9d2b802fa39ba595a8a87f0b2e8f1ff1bb4a5a64857f38959ce9b0", size = 62636314, upload-time = "2026-06-26T04:02:07.559Z" },
-    { url = "https://files.pythonhosted.org/packages/62/34/9b20a9e29a8e427b34229b7bc75ea79d928396e502e456d2b7a31d40ce25/mitsuba-3.9.0-cp312-abi3-win_amd64.whl", hash = "sha256:0f192beed656d0dbc6ed22f876a831d77cc86077aff1b3e283af959af7b6f1ca", size = 45372115, upload-time = "2026-06-26T04:02:16.613Z" },
-    { url = "https://files.pythonhosted.org/packages/7a/cb/70f437a891d1fd6f7f3819fb07202d27446e1191bb6eb4e40ca2a647a70c/mitsuba-3.9.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:d1a3ad5110d5c5a90020791d885a9413eca0e6f8f01a4da1d3642389d3942603", size = 52337433, upload-time = "2026-06-26T04:34:34.709Z" },
-    { url = "https://files.pythonhosted.org/packages/df/5d/969f2ede537c018f8e4416dcc947837fec22d376cd9e65b9d25e446893ec/mitsuba-3.9.0-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:3fa5fced23009e221b96736961152e3d4b90070a1ce3e3b9262e18aeb0fb4b2f", size = 54103674, upload-time = "2026-06-26T04:03:05.207Z" },
-    { url = "https://files.pythonhosted.org/packages/4b/93/4d48f1b6222ac9ac9909f433af5d016c1c58f4a814494786d6ff96f1ada2/mitsuba-3.9.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:0023aa0073590ca25053713c8e423cedec232ebf145cfec95e42d03e9d26e398", size = 62625731, upload-time = "2026-06-26T04:03:00.593Z" },
-    { url = "https://files.pythonhosted.org/packages/0a/33/b5e0843f4a78df477f8d1897ace306e70effe2abc8997e29d10d309d37c7/mitsuba-3.9.0-cp314-cp314-win_amd64.whl", hash = "sha256:0a9dc4c3dfa67b8d5034e15b4029a006d38f3a171de8306816d666bc22bde09d", size = 46311104, upload-time = "2026-06-26T04:03:09.549Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "drjit", specifier = "==1.4.0" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'", specifier = ">=4.12" },
 ]
 
 [[package]]

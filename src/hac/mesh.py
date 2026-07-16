@@ -25,6 +25,27 @@ def convert_stl_to_obj(stl_path: Path, obj_path: Path | None = None) -> Path:
 
     return obj_path
 
+
+def construct_initial_ellipsoid_mesh(
+    radius: float,
+    subdivisions: int = 5,
+) -> trimesh.Trimesh:
+    """
+    Construct a mesh with an initial ellipsoid guess.
+
+    Arguments:
+    - radius: The radius of the ellipsoid.
+    - subdivisions: The number of subdivisions for the icosphere.
+        Higher values result in a more detailed mesh.
+        The default level of 5 gives a very detailed mesh that should probably be simplified
+        with `Trimesh.simplify_quadratic_decimation`
+    """
+    mesh = trimesh.creation.icosphere(subdivisions=subdivisions)
+    mesh = mesh.apply_scale([radius, radius, 1.0])
+
+    return mesh
+
+
 def normalize_mesh_to_challenge_cylinder(
     mesh,
     target_R,

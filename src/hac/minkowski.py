@@ -167,9 +167,7 @@ def minkowski_reconstruct(
         polygons = _facet_polygons(hull, n)
         hull_vertex_set = set(int(v) for v in hull.vertices)
 
-        all_points = np.concatenate(
-            [polygons[i] for i in hull_vertex_set], axis=0
-        )
+        all_points = np.concatenate([polygons[i] for i in hull_vertex_set], axis=0)
 
         h = np.zeros(n)
         pxk = np.zeros(n)
@@ -276,9 +274,7 @@ def minkowski_reconstruct(
     scoef = scoef * np.sqrt(initarealen / arealen)
     scoef = scoef / np.sqrt(scale)
 
-    final_points = np.concatenate(
-        [polygons[i] for i in hull_vertex_set], axis=0
-    )
+    final_points = np.concatenate([polygons[i] for i in hull_vertex_set], axis=0)
     vertices = scoef * (final_points - cmass[None, :])
     return vertices
 
@@ -296,9 +292,7 @@ def _merge_close_vertices(vertices: np.ndarray, tol: float | None) -> np.ndarray
     final hull is fragmented into many spurious micro-facets.
     """
     if tol is None:
-        bbox_diag = float(
-            np.linalg.norm(vertices.max(axis=0) - vertices.min(axis=0))
-        )
+        bbox_diag = float(np.linalg.norm(vertices.max(axis=0) - vertices.min(axis=0)))
         tol = 1e-3 * bbox_diag
 
     from scipy.spatial import cKDTree

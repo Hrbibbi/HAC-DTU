@@ -4,7 +4,7 @@ from typing import Literal
 
 import pandas as pd
 
-from hac.constants import CHALLENGE_DATA_DIR, BASE_RADII
+from hac.constants import BASE_RADII, CHALLENGE_DATA_DIR
 
 
 def get_model_folder(model_num: int) -> Path:

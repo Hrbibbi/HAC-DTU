@@ -6,8 +6,8 @@ We need conversion from STL to OBJ if we use Mitsuba.
 
 from pathlib import Path
 
-import trimesh
 import numpy as np
+import trimesh
 
 
 def convert_stl_to_obj(stl_path: Path, obj_path: Path | None = None) -> Path:
@@ -125,8 +125,7 @@ def normalize_mesh_to_challenge_cylinder(
 
     else:
         raise ValueError(
-            "center_xy must be 'bounds', 'centroid', or None. "
-            f"Got {center_xy!r}."
+            f"center_xy must be 'bounds', 'centroid', or None. Got {center_xy!r}."
         )
 
     x_centered = x - xy_center[0]
@@ -145,10 +144,10 @@ def normalize_mesh_to_challenge_cylinder(
 
     transform = np.array(
         [
-            [scale_xy, 0.0,      0.0,     -scale_xy * xy_center[0]],
-            [0.0,      scale_xy, 0.0,     -scale_xy * xy_center[1]],
-            [0.0,      0.0,      scale_z, -scale_z * z_mid],
-            [0.0,      0.0,      0.0,      1.0],
+            [scale_xy, 0.0, 0.0, -scale_xy * xy_center[0]],
+            [0.0, scale_xy, 0.0, -scale_xy * xy_center[1]],
+            [0.0, 0.0, scale_z, -scale_z * z_mid],
+            [0.0, 0.0, 0.0, 1.0],
         ],
         dtype=float,
     )

@@ -8,6 +8,7 @@ class ObserverGeometry:
 
     See: `workspaces/jeppe/overview.pdf` section "Geometry" for details.
     """
+
     # Angle around -z axis where 0 degrees is aligned with -x axis.
     # Referred to as 'measurement angle' in FIPS HAC documentation.
     # Measured in degrees.

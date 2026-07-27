@@ -6,8 +6,8 @@ install: update-submodules
 
 # Format Python files with Ruff.
 format:
-    uv run ruff check --select I --fix --exclude "*.ipynb" .
-    uv run ruff format --exclude "*.ipynb" .
+    uv run ruff check --select I --fix --exclude "*.ipynb" --exclude "vendored"
+    uv run ruff format --exclude "*.ipynb" src/ --exclude "vendored"
 
 # Update the submodules
 update-submodules:

@@ -4,12 +4,12 @@
 # ruff: noqa: E402
 
 # %%
-import datetime
 import os
-
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 os.environ.setdefault("DSDIR", "/work3/projects/HAC-DTU/challenge_data")
 
+import datetime
+import sys
 import json
 import math
 import time
@@ -39,7 +39,17 @@ from hac.visualize import (
 )
 
 # %%
-MODEL_NUM = 2
+IS_NOTEBOOK = True
+try:
+    get_ipython()
+except NameError:
+    IS_NOTEBOOK = False
+
+if not IS_NOTEBOOK and len(sys.argv) == 2:
+    MODEL_NUM = int(sys.argv[1])
+else:
+    MODEL_NUM = 2
+
 EXPERIMENTS = tuple(OBSERVERS)
 MOVIE_EXPERIMENT = "0_hor1"
 
@@ -344,6 +354,6 @@ def main():
     SUMMARY_PATH.write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))
 
-
+# %%
 if __name__ == "__main__":
     main()

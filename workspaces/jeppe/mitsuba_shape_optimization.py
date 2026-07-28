@@ -5,6 +5,7 @@
 
 # %%
 import os
+
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 os.environ.setdefault("DSDIR", "/work3/projects/HAC-DTU/challenge_data")
 
@@ -48,7 +49,7 @@ except NameError:
 if not IS_NOTEBOOK and len(sys.argv) == 2:
     MODEL_NUM = int(sys.argv[1])
 else:
-    MODEL_NUM = 2
+    MODEL_NUM = 4
 
 EXPERIMENTS = tuple(OBSERVERS)
 MOVIE_EXPERIMENT = "0_hor1"
@@ -135,20 +136,42 @@ def movie_frames(mesh_path: Path):
     return bitmap_frames(forward.render(seed=1)[0])
 
 
+def combine_movie_frames(
+    known_model_frames: np.ndarray | None,
+    initial_guess_frames: np.ndarray,
+    optimized_frames: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the known-model panel and the three-panel comparison frames."""
+    if known_model_frames is None:
+        known_model_frames = np.zeros_like(initial_guess_frames)
+
+    comparison_frames = np.concatenate(
+        [known_model_frames, initial_guess_frames, optimized_frames],
+        axis=2,
+    )
+    return known_model_frames, comparison_frames
+
+
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     start_time = time.perf_counter()
 
-    # Retain a high-resolution reference visualized in the same canonical
-    # coordinates as the initial guess.
-    model_stl_path = get_model_stl_path(model_num=MODEL_NUM)
-    reference_mesh = normalize_mesh_to_challenge_cylinder(
-        trimesh.load_mesh(model_stl_path),
-        target_R=MODEL_BASE_RADII[MODEL_NUM],
-    )
-    reference_mesh.export(NORMALIZED_REFERENCE_MESH_PATH)
-
     cylinder_radius = MODEL_BASE_RADII[MODEL_NUM]
+    model_stl_path = get_model_stl_path(model_num=MODEL_NUM) if MODEL_NUM <= 3 else None
+    if model_stl_path is not None:
+        # Retain a high-resolution reference visualized in the same canonical
+        # coordinates as the initial guess.
+        reference_mesh = normalize_mesh_to_challenge_cylinder(
+            trimesh.load_mesh(model_stl_path),
+            target_R=cylinder_radius,
+        )
+        reference_mesh.export(NORMALIZED_REFERENCE_MESH_PATH)
+    else:
+        print(
+            f"Model {MODEL_NUM} has no known reference shape; "
+            "skipping reference mesh and reference loss."
+        )
+
     initial_guess = normalize_mesh_to_challenge_cylinder(
         construct_initial_ellipsoid_mesh(
             radius=cylinder_radius,
@@ -198,22 +221,26 @@ def main():
     )
     target = target / dr.reshape(dr.mean(target, axis=1), (forward.observer_count, 1))
 
-    reference_forward = ForwardModel(
-        MitsubaMesh(obj_path=NORMALIZED_REFERENCE_MESH_PATH),
-        n_phases=OPTIMIZATION_PHASES,
-        observers=optimization_observers,
-        rendering_settings=optimization_rendering_settings,
-        normalize_mesh=False,
-        minimum_projected_phase_center_separation=(
-            MIN_PROJECTED_PHASE_CENTER_SEPARATION
-        ),
-    )
-    reference_curve = np.asarray(reference_forward.render_lightcurves(seed=0)).copy()
-    true_shape_forward_curve_mse = float(
-        np.mean(np.square(reference_curve - np.asarray(target)))
-    )
-    del reference_forward
-    print(f"True-shape forward curve MSE: {true_shape_forward_curve_mse:.8f}")
+    true_shape_forward_curve_mse = None
+    if model_stl_path is not None:
+        reference_forward = ForwardModel(
+            MitsubaMesh(obj_path=NORMALIZED_REFERENCE_MESH_PATH),
+            n_phases=OPTIMIZATION_PHASES,
+            observers=optimization_observers,
+            rendering_settings=optimization_rendering_settings,
+            normalize_mesh=False,
+            minimum_projected_phase_center_separation=(
+                MIN_PROJECTED_PHASE_CENTER_SEPARATION
+            ),
+        )
+        reference_curve = np.asarray(
+            reference_forward.render_lightcurves(seed=0)
+        ).copy()
+        true_shape_forward_curve_mse = float(
+            np.mean(np.square(reference_curve - np.asarray(target)))
+        )
+        del reference_forward
+        print(f"True-shape forward curve MSE: {true_shape_forward_curve_mse:.8f}")
 
     large_steps = mi.ad.LargeSteps(
         forward.params[forward.position_key],
@@ -297,15 +324,24 @@ def main():
         loss_history,
         LOSS_PLOT_PATH,
         reference_loss=true_shape_forward_curve_mse,
-        reference_label="True-shape forward MSE",
+        reference_label=(
+            "True-shape forward MSE"
+            if true_shape_forward_curve_mse is not None
+            else None
+        ),
     )
 
-    true_movie_frames = movie_frames(NORMALIZED_REFERENCE_MESH_PATH)
+    true_movie_frames = (
+        movie_frames(NORMALIZED_REFERENCE_MESH_PATH)
+        if model_stl_path is not None
+        else None
+    )
     initial_guess_movie_frames = movie_frames(INITIAL_GUESS_MESH_PATH)
     optimized_movie_frames = movie_frames(OPTIMIZED_MESH_PATH)
-    comparison_movie_frames = np.concatenate(
-        [true_movie_frames, initial_guess_movie_frames, optimized_movie_frames],
-        axis=2,
+    true_movie_frames, comparison_movie_frames = combine_movie_frames(
+        true_movie_frames,
+        initial_guess_movie_frames,
+        optimized_movie_frames,
     )
     write_movie(TRUE_MOVIE_PATH, true_movie_frames, MOVIE_FPS)
     write_movie(INITIAL_GUESS_MOVIE_PATH, initial_guess_movie_frames, MOVIE_FPS)
@@ -334,13 +370,17 @@ def main():
         "initial_guess_vertex_count": len(initial_guess.vertices),
         "initial_guess_face_count": len(initial_guess.faces),
         "initial_guess_mesh": str(INITIAL_GUESS_MESH_PATH),
-        "normalized_reference_mesh": str(NORMALIZED_REFERENCE_MESH_PATH),
+        "reference_shape_available": model_stl_path is not None,
+        "normalized_reference_mesh": (
+            str(NORMALIZED_REFERENCE_MESH_PATH) if model_stl_path is not None else None
+        ),
         "movie_experiment": MOVIE_EXPERIMENT,
         "true_shape_forward_curve_mse": true_shape_forward_curve_mse,
         "initial_guess_total_loss": loss_history[0],
         "best_iteration": best_iteration,
         "final_loss": final_loss,
         "true_movie": str(TRUE_MOVIE_PATH),
+        "true_movie_is_placeholder": model_stl_path is None,
         "initial_guess_movie": str(INITIAL_GUESS_MOVIE_PATH),
         "optimized_movie": str(OPTIMIZED_MOVIE_PATH),
         "comparison_movie": str(COMPARISON_MOVIE_PATH),
@@ -354,6 +394,8 @@ def main():
     SUMMARY_PATH.write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))
 
+
 # %%
 if __name__ == "__main__":
+    print(f"Running shape optimization script on {MODEL_NUM}")
     main()

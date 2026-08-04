@@ -1,6 +1,6 @@
-import mitsuba as _mi
+from typing import Any, cast
 
-from typing import cast, Any
+import mitsuba as _mi
 
 # This patches Mitsuba to work slightly better with static type checking tools
 # Without this, Pylance (and others, I expect) paints everything red :(

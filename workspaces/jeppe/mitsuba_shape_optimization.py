@@ -10,9 +10,9 @@ os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 os.environ.setdefault("DSDIR", "/work3/projects/HAC-DTU/challenge_data")
 
 import datetime
-import sys
 import json
 import math
+import sys
 import time
 from pathlib import Path
 
@@ -31,7 +31,7 @@ from hac.mesh import (
     normalize_mesh_to_challenge_cylinder,
 )
 from hac.mitsuba.forward import ForwardModel
-from hac.mitsuba.mesh import MitsubaMesh
+from hac.mitsuba.mesh import MitsubaMesh, normalize_positions_to_challenge_cylinder
 from hac.mitsuba.scene import RenderingSettings
 from hac.mitsuba.visualize import bitmap_frames, write_movie
 from hac.visualize import (
@@ -88,34 +88,6 @@ NORMALIZED_REFERENCE_MESH_PATH = OUTPUT_DIR / "normalized_reference.obj"
 LIGHTCURVE_PLOT_PATH = OUTPUT_DIR / "lightcurve_fit.png"
 LOSS_PLOT_PATH = OUTPUT_DIR / "optimization_loss.png"
 SUMMARY_PATH = OUTPUT_DIR / "summary.json"
-
-
-def normalize_positions_to_challenge_cylinder(flat_positions, target_radius):
-    """Differentiably normalize positions into the known challenge cylinder."""
-    vertex_count = dr.width(flat_positions) // 3
-    vertex_indices = dr.arange(mi.UInt, vertex_count)
-    vertices = mi.Point3f(
-        dr.gather(mi.Float, flat_positions, 3 * vertex_indices),
-        dr.gather(mi.Float, flat_positions, 3 * vertex_indices + 1),
-        dr.gather(mi.Float, flat_positions, 3 * vertex_indices + 2),
-    )
-
-    x_center = 0.5 * (dr.min(vertices.x) + dr.max(vertices.x))
-    y_center = 0.5 * (dr.min(vertices.y) + dr.max(vertices.y))
-    centered_x = vertices.x - x_center
-    centered_y = vertices.y - y_center
-    radial_max = dr.max(dr.sqrt(dr.square(centered_x) + dr.square(centered_y)))
-
-    z_min = dr.min(vertices.z)
-    z_max = dr.max(vertices.z)
-    z_center = 0.5 * (z_min + z_max)
-
-    normalized_vertices = mi.Point3f(
-        centered_x * (target_radius / radial_max),
-        centered_y * (target_radius / radial_max),
-        (vertices.z - z_center) * (2.0 / (z_max - z_min)),
-    )
-    return dr.ravel(normalized_vertices)
 
 
 def movie_frames(mesh_path: Path):

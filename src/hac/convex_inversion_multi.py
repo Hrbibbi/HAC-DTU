@@ -170,6 +170,7 @@ class ConvexInversionMulti:
 
         self.normals, self.areas_init = _facet_normals_and_areas(init_mesh)
         self.n_facets = len(self.areas_init)
+        self.areas_init_total = np.sum(self.areas_init)
 
     def load_lightcurve_data(
         self, model_num, origin="simulated", curve_type="intensity"
@@ -551,6 +552,56 @@ class ConvexInversionMulti:
         self.scattering_params = all_params
         return all_params
 
+    def set_scattering_params(self, value, group_fn=_cam_group, curve_type=None):
+        """
+        Set the same scattering-law parameter value (lambert_weight for
+        intensity, mu0_threshold for binary) for every camera, instead of
+        grid-searching it per camera group with `fit_scattering_params` --
+        e.g. `set_scattering_params(0.2)` to fix lambert_weight=0.2
+        everywhere.
+
+        Populates self.scattering_params as a {group_name: value} dict, all
+        groups mapping to the same `value`, using `group_fn` (must match
+        whatever `build_forward` is later called with) to enumerate group
+        names from self.cam_keys -- same shape `fit_scattering_params`
+        produces, so it's a drop-in replacement feeding straight into
+        `build_forward(params=...)` or the cached `self.scattering_params`.
+
+        In joint mode (self.channels populated via
+        `load_lightcurve_data_joint`), sets both channels' `scattering_params`
+        and self.scattering_params becomes {"intensity": {...}, "binary":
+        {...}}, matching `fit_scattering_params_joint`'s output shape. Pass
+        `curve_type` ("intensity" or "binary") to set only that one channel,
+        leaving the other channel's existing params (if any) untouched.
+        """
+        if not hasattr(self, "cam_keys"):
+            raise ValueError(
+            "Lightcurve data not loaded. Call load_lightcurve_data() "
+            "(or load_lightcurve_data_joint()) first."
+            )
+        groups = sorted({group_fn(cam) for cam in self.cam_keys})
+        params = {group: float(value) for group in groups}
+
+        if hasattr(self, "channels"):
+            target_types = (
+            [curve_type] if curve_type else [c["curve_type"] for c in self.channels]
+            )
+            all_params = dict(getattr(self, "scattering_params", None) or {})
+            for channel in self.channels:
+                if channel["curve_type"] in target_types:
+                    channel["scattering_params"] = params
+                    all_params[channel["curve_type"]] = params
+            self.scattering_params = all_params
+            print(
+                f"Set scattering param = {value} for {len(groups)} camera group(s) "
+                f"({', '.join(target_types)})"
+            )
+        else:
+            self.scattering_params = params
+            print(f"Set scattering param = {value} for {len(groups)} camera group(s)")
+        return params
+
+
     def build_forward(
         self,
         params=None,
@@ -667,6 +718,7 @@ class ConvexInversionMulti:
         a,
         lambda_s,
         _use_gpu,
+        lambda_a=None,
         parametrization="log",
         cam_weights=None,
         l1_regularization=0.0,
@@ -675,6 +727,10 @@ class ConvexInversionMulti:
         `lambda_s`: either a scalar (uniform regularization, the original
         behavior) or a length-3 (lambda_x, lambda_y, lambda_z) sequence for
         per-axis convexity regularization -- see `fit_areas`.
+
+        `lambda_a`:  scalar for area regularization. If None, lambda_a = max(lambda_s). 
+        Controls that the total area of the shape is not too far from the initial guess,
+        which is need to avoid convexity regularization from shrinking the shape.
 
         `l1_regularization`: extra `l1_regularization * sum(area)` penalty
         added to the cost (0.0 = off, original behavior).
@@ -738,6 +794,12 @@ class ConvexInversionMulti:
         cost += float(self._xp.dot(conv_vec, weighted_conv))
         grad_g += 2.0 * (self._normals @ weighted_conv)
 
+        if lambda_a is None:
+            lambda_a = float(self._xp.max(lambda_vec))
+        g_total = self._xp.sum(g) 
+        cost += float(lambda_a * (g_total - self.areas_init_total)**2)
+        grad_g += 2.0 * lambda_a * (g_total-self.areas_init_total)
+
         if l1_regularization:
             cost += float(l1_regularization * self._xp.sum(g))
             grad_g += l1_regularization
@@ -755,6 +817,7 @@ class ConvexInversionMulti:
         a,
         lambda_s,
         _use_gpu,
+        lambda_a=None,
         parametrization="log",
         cam_weights=None,
         channel_weights=None,
@@ -826,6 +889,12 @@ class ConvexInversionMulti:
         cost += float(self._xp.dot(conv_vec, weighted_conv))
         grad_g += 2.0 * (self._normals @ weighted_conv)
 
+        if lambda_a is None:
+            lambda_a = float(self._xp.max(lambda_vec))
+        g_total = self._xp.sum(g) 
+        cost += float(lambda_a * (g_total - self.areas_init_total)**2)
+        grad_g += 2.0 * lambda_a * (g_total-self.areas_init_total)
+
         grad = g * grad_g if parametrization == "log" else grad_g
 
         if _use_gpu:
@@ -835,6 +904,7 @@ class ConvexInversionMulti:
     def fit_areas(
         self,
         convexity_regularization=0.1,
+        scale_penalty=None,
         optimizer="cg",
         max_iter=10000,
         gtol=1e-8,
@@ -924,6 +994,7 @@ class ConvexInversionMulti:
                 a=a,
                 lambda_s=convexity_regularization,
                 _use_gpu=_use_gpu,
+                lambda_a=scale_penalty,
                 parametrization=parametrization,
                 cam_weights=cam_weights,
                 l1_regularization=l1_regularization,
@@ -968,6 +1039,7 @@ class ConvexInversionMulti:
         self,
         convexity_regularization=0.1,
         optimizer="cg",
+        scale_penalty=None,
         max_iter=10000,
         gtol=1e-8,
         avoid_gpu=False,
@@ -1037,6 +1109,7 @@ class ConvexInversionMulti:
                 a=a,
                 lambda_s=convexity_regularization,
                 _use_gpu=_use_gpu,
+                lambda_a=scale_penalty,
                 parametrization=parametrization,
                 cam_weights=cam_weights,
                 channel_weights=channel_weights,
@@ -1046,7 +1119,7 @@ class ConvexInversionMulti:
 
         def _cb(a):
             _iter[0] += 1
-            if _iter[0] % 1000 == 0:
+            if _iter[0] % 1000 == 0 or _iter[0] == 1:
                 c, _ = func(a)
                 print(f"  iter {_iter[0]:4d}: cost = {c:.6f}")
 

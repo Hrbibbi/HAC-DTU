@@ -170,3 +170,172 @@ def normalize_mesh_to_challenge_cylinder(
         print(f"  normalized z range:    [{np.min(v2[:, 2])}, {np.max(v2[:, 2])}]")
 
     return mesh_out
+
+def normalize_mesh_to_z_bounds(
+    mesh,
+    *,
+    center_xy="bounds",
+    copy=True,
+    verbose=False,
+):
+    """
+    Isotropically normalize a mesh so its z bounds are [-1, 1].
+
+    Unlike ``normalize_mesh_to_challenge_cylinder``, this function applies
+    the same scale factor to x, y, and z. The mesh's aspect ratios are
+    therefore preserved.
+
+    After transformation, the output mesh approximately satisfies:
+
+        min(z) = -1
+        max(z) = +1
+
+    The x/y radial extent is not constrained.
+
+    Parameters
+    ----------
+    mesh:
+        trimesh.Trimesh object.
+
+    center_xy:
+        Controls how the x/y origin is chosen before scaling.
+
+        "bounds":
+            Center x/y using the midpoint of the x/y bounding box.
+
+        "centroid":
+            Center x/y using mesh.centroid[:2].
+
+        None:
+            Do not recenter x/y.
+
+    copy:
+        If True, transform and return a copy.
+        If False, modify the input mesh in place.
+
+    verbose:
+        Print before/after normalization diagnostics.
+
+    Returns
+    -------
+    trimesh.Trimesh
+        Isotropically normalized mesh.
+    """
+    mesh_out = mesh.copy() if copy else mesh
+
+    vertices = np.asarray(mesh_out.vertices, dtype=float)
+
+    if len(vertices) == 0:
+        raise ValueError("Cannot normalize an empty mesh.")
+
+    x = vertices[:, 0]
+    y = vertices[:, 1]
+    z = vertices[:, 2]
+
+    z_min = float(np.min(z))
+    z_max = float(np.max(z))
+    z_span = z_max - z_min
+
+    if z_span <= 0:
+        raise ValueError(
+            "Cannot normalize z: mesh has zero z-extent."
+        )
+
+    if center_xy == "bounds":
+        xy_center = np.array(
+            [
+                0.5 * (
+                    float(np.min(x))
+                    + float(np.max(x))
+                ),
+                0.5 * (
+                    float(np.min(y))
+                    + float(np.max(y))
+                ),
+            ],
+            dtype=float,
+        )
+
+    elif center_xy == "centroid":
+        xy_center = np.asarray(
+            mesh_out.centroid[:2],
+            dtype=float,
+        )
+
+    elif center_xy is None:
+        xy_center = np.array(
+            [0.0, 0.0],
+            dtype=float,
+        )
+
+    else:
+        raise ValueError(
+            "center_xy must be 'bounds', 'centroid', or None. "
+            f"Got {center_xy!r}."
+        )
+
+    z_mid = 0.5 * (z_min + z_max)
+
+    # The target z span is 2: [-1, 1].
+    #
+    # Crucially, this same factor is applied to x, y, and z so the
+    # original shape proportions are preserved.
+    scale = 2.0 / z_span
+
+    transform = np.array(
+        [
+            [
+                scale,
+                0.0,
+                0.0,
+                -scale * xy_center[0],
+            ],
+            [
+                0.0,
+                scale,
+                0.0,
+                -scale * xy_center[1],
+            ],
+            [
+                0.0,
+                0.0,
+                scale,
+                -scale * z_mid,
+            ],
+            [
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
+        ],
+        dtype=float,
+    )
+
+    mesh_out.apply_transform(transform)
+
+    if verbose:
+        normalized_vertices = np.asarray(
+            mesh_out.vertices
+        )
+
+        radial = np.sqrt(
+            normalized_vertices[:, 0] ** 2
+            + normalized_vertices[:, 1] ** 2
+        )
+
+        print("Z-bounds normalization")
+        print(f"  center_xy mode:        {center_xy}")
+        print(f"  original xy center:    {xy_center}")
+        print(f"  original z range:      [{z_min}, {z_max}]")
+        print(f"  isotropic scale:       {scale}")
+        print(
+            "  normalized z range:    "
+            f"[{np.min(normalized_vertices[:, 2])}, "
+            f"{np.max(normalized_vertices[:, 2])}]"
+        )
+        print(
+            f"  normalized radial max: {np.max(radial)}"
+        )
+
+    return mesh_out

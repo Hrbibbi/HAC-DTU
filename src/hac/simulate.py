@@ -161,54 +161,169 @@ def generate_binary_curve(frames: np.ndarray):
     lightcurve = lightcurve / mean_intensity
     return lightcurve
 
-def generate_challenge_lightcurves(
-    model_num: int,
+def generate_lightcurves_from_mesh(
+    mesh,
     cam_idx: str,
-    sim_root: str | Path | None = None,
-) -> np.ndarray:
+    out_dir: str | Path | None = None,
+    rot_angles=np.arange(360),
+    image_size=(1024, 1024),
+    cam_dist=30,
+    verbose=True,
+) -> dict[str, np.ndarray]:
     """
-    Generates a lightcurve for a challenge model with known shape.
-    To do this, frames are generated to match one-to-one the blender frame sequence.
-    The lightcurve is normalized like described on the challenge website.
+    Generate HAC-style lightcurves from an already prepared mesh.
 
-    If sim_root is provided, saves the lightcurve as:
-        sim_root / model_<model_num> / cam_<cam_idx>.npy
+    The caller is responsible for ensuring that the mesh is in the desired
+    coordinate system and scale.
+
+    Parameters
+    ----------
+    mesh
+        PyVista mesh or trimesh.Trimesh.
+
+    cam_idx
+        Challenge observer/camera position.
+
+    out_dir
+        Optional directory in which the generated lightcurves are saved.
+
+    rot_angles
+        Rotation angles used during simulation.
+
+    image_size
+        Rendering resolution.
+
+    cam_dist
+        Camera distance used for all rendered frames.
+
+    verbose
+        Print rendering and output information.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        Dictionary containing ``intensity`` and ``binary`` lightcurves.
     """
-    stl_path = get_model_stl_path(model_num)
-    mesh = pv.read(stl_path)
-
     frames = simulate_rotation_frames(
         mesh=mesh,
         cam_idx=cam_idx,
-        rot_angles=np.arange(360),
+        rot_angles=rot_angles,
         show_edges=False,
-        cam_dist=30,
+        cam_dist=cam_dist,
         focal_point=(0, 0, 0),
-        image_size=(1024, 1024),
+        image_size=image_size,
         light_dist=1000,
-        verbose=True,
+        verbose=verbose,
     )
 
-    intensity_curve = generate_intensity_curve(frames)
-    binary_curve = generate_binary_curve(frames)
+    intensity_curve = generate_intensity_curve(
+        frames
+    )
 
-    if sim_root is not None:
-        model_dir = Path(sim_root) / f"model_{model_num:02d}"
-        model_dir.mkdir(parents=True, exist_ok=True)
+    binary_curve = generate_binary_curve(
+        frames
+    )
 
-        intensity_path = model_dir / f"cam_{cam_idx}_intensity.npy"
-        binary_path = model_dir / f"cam_{cam_idx}_binary.npy"
+    if out_dir is not None:
+        out_dir = Path(
+            out_dir
+        )
 
-        np.save(intensity_path, intensity_curve)
-        np.save(binary_path, binary_curve)
+        out_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
-        print(f"Saved intensity curve: {intensity_path}")
-        print(f"Saved binary curve:    {binary_path}")
+        intensity_path = (
+            out_dir
+            / f"cam_{cam_idx}_intensity.npy"
+        )
+
+        binary_path = (
+            out_dir
+            / f"cam_{cam_idx}_binary.npy"
+        )
+
+        np.save(
+            intensity_path,
+            intensity_curve,
+        )
+
+        np.save(
+            binary_path,
+            binary_curve,
+        )
+
+        if verbose:
+            print(
+                f"Saved intensity curve: "
+                f"{intensity_path}"
+            )
+
+            print(
+                f"Saved binary curve:    "
+                f"{binary_path}"
+            )
 
     return {
         "intensity": intensity_curve,
         "binary": binary_curve,
     }
+
+
+def generate_challenge_lightcurves(
+    model_num: int,
+    cam_idx: str,
+    sim_root: str | Path | None = None,
+) -> dict[str, np.ndarray]:
+    """
+    Generate lightcurves for one original Helsinki Asteroid Challenge model.
+
+    This is a convenience wrapper around ``generate_lightcurves_from_mesh``.
+    It resolves and loads the challenge STL before performing the common
+    simulation.
+
+    Parameters
+    ----------
+    model_num
+        Challenge model number.
+
+    cam_idx
+        Challenge observer/camera position.
+
+    sim_root
+        Optional root directory for generated challenge-model lightcurves.
+
+        If provided, output is written under::
+
+            sim_root / model_<model_num>/
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        Dictionary containing ``intensity`` and ``binary`` lightcurves.
+    """
+    stl_path = get_model_stl_path(
+        model_num
+    )
+
+    mesh = pv.read(
+        stl_path
+    )
+
+    if sim_root is None:
+        out_dir = None
+    else:
+        out_dir = (
+            Path(sim_root)
+            / f"model_{model_num:02d}"
+        )
+
+    return generate_lightcurves_from_mesh(
+        mesh=mesh,
+        cam_idx=cam_idx,
+        out_dir=out_dir,
+    )
 
 if __name__ == "__main__":
     generate_challenge_lightcurves(

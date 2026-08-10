@@ -1,5 +1,5 @@
-from hac.simulate import generate_challenge_lightcurves
 from hac.constants import *
+from hac.simulate import generate_challenge_lightcurves
 
 model_num = 3
 for cam_idx in POSITION_IDS:

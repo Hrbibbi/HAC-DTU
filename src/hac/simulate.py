@@ -167,14 +167,14 @@ def generate_lightcurves_from_mesh(
     out_dir: str | Path | None = None,
     rot_angles=np.arange(360),
     image_size=(1024, 1024),
+    cam_dist=30,
     verbose=True,
 ) -> dict[str, np.ndarray]:
     """
     Generate HAC-style lightcurves from an already prepared mesh.
 
     The caller is responsible for ensuring that the mesh is in the desired
-    coordinate system and scale. In particular, external meshes such as
-    DAMIT models should be normalized before calling this function.
+    coordinate system and scale.
 
     Parameters
     ----------
@@ -187,16 +187,14 @@ def generate_lightcurves_from_mesh(
     out_dir
         Optional directory in which the generated lightcurves are saved.
 
-        Files are written as::
-
-            cam_<cam_idx>_intensity.npy
-            cam_<cam_idx>_binary.npy
-
     rot_angles
         Rotation angles used during simulation.
 
     image_size
         Rendering resolution.
+
+    cam_dist
+        Camera distance used for all rendered frames.
 
     verbose
         Print rendering and output information.
@@ -211,27 +209,25 @@ def generate_lightcurves_from_mesh(
         cam_idx=cam_idx,
         rot_angles=rot_angles,
         show_edges=False,
-        cam_dist=30,
+        cam_dist=cam_dist,
         focal_point=(0, 0, 0),
         image_size=image_size,
         light_dist=1000,
         verbose=verbose,
     )
 
-    intensity_curve = (
-        generate_intensity_curve(
-            frames
-        )
+    intensity_curve = generate_intensity_curve(
+        frames
     )
 
-    binary_curve = (
-        generate_binary_curve(
-            frames
-        )
+    binary_curve = generate_binary_curve(
+        frames
     )
 
     if out_dir is not None:
-        out_dir = Path(out_dir)
+        out_dir = Path(
+            out_dir
+        )
 
         out_dir.mkdir(
             parents=True,

@@ -3,11 +3,12 @@ from pathlib import Path
 
 import numpy as np
 import pyvista as pv
+from skimage.filters import threshold_otsu
 from tqdm.auto import tqdm
 
+from hac.constants import *
 from hac.data import get_model_stl_path
 from hac.geometry import *
-from hac.constants import *
 
 
 def simulate_rotation_frames(
@@ -141,8 +142,26 @@ def simulate_rotation_frames(
 
     return np.asarray(frames)
 
+def generate_intensity_curve(frames: np.ndarray):
+    thresholded_frames = np.where(
+        frames > INTENSITY_CURVE_THRESHOLD,
+        frames,
+        0,
+    )
+    lightcurve = np.sum(thresholded_frames, axis=(1, 2)).astype(float)
+    mean_intensity = lightcurve.mean()
+    lightcurve = lightcurve / mean_intensity
+    return lightcurve
 
-def generate_challenge_lightcurve(
+def generate_binary_curve(frames: np.ndarray):
+    binary_threshold = threshold_otsu(frames[0])
+    thresholded_frames = frames > binary_threshold
+    lightcurve = np.sum(thresholded_frames, axis=(1, 2)).astype(float)
+    mean_intensity = lightcurve.mean()
+    lightcurve = lightcurve / mean_intensity
+    return lightcurve
+
+def generate_challenge_lightcurves(
     model_num: int,
     cam_idx: str,
     sim_root: str | Path | None = None,
@@ -170,31 +189,29 @@ def generate_challenge_lightcurve(
         verbose=True,
     )
 
-    thresholded_frames = np.where(
-        frames > INTENSITY_CURVE_THRESHOLD,
-        frames,
-        0,
-    )
-
-    lightcurve = np.sum(thresholded_frames, axis=(1, 2)).astype(float)
-
-    mean_intensity = lightcurve.mean()
-
-    lightcurve = lightcurve / mean_intensity
+    intensity_curve = generate_intensity_curve(frames)
+    binary_curve = generate_binary_curve(frames)
 
     if sim_root is not None:
         model_dir = Path(sim_root) / f"model_{model_num:02d}"
         model_dir.mkdir(parents=True, exist_ok=True)
 
-        save_path = model_dir / f"cam_{cam_idx}.npy"
-        np.save(save_path, lightcurve)
+        intensity_path = model_dir / f"cam_{cam_idx}_intensity.npy"
+        binary_path = model_dir / f"cam_{cam_idx}_binary.npy"
 
-        print(f"Saved lightcurve: {save_path}")
+        np.save(intensity_path, intensity_curve)
+        np.save(binary_path, binary_curve)
 
-    return lightcurve
+        print(f"Saved intensity curve: {intensity_path}")
+        print(f"Saved binary curve:    {binary_path}")
+
+    return {
+        "intensity": intensity_curve,
+        "binary": binary_curve,
+    }
 
 if __name__ == "__main__":
-    generate_challenge_lightcurve(
+    generate_challenge_lightcurves(
         model_num=2,
         cam_idx="45_top",
         sim_root="workspaces/david/out/sim_lc"

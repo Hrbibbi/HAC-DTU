@@ -6,17 +6,15 @@ app = marimo.App()
 
 @app.cell
 def _():
+    import drjit as dr
+    import imageio_ffmpeg
+    import marimo as mo
+    import matplotlib.pyplot as plt
     import mitsuba as mi
     import numpy as np
-    import drjit as dr
 
-    import matplotlib.pyplot as plt
-    import imageio_ffmpeg
-
-    from hac.data import get_model_stl_path
     from hac.constants import OBSERVERS
-
-    import marimo as mo
+    from hac.data import get_model_stl_path
 
     return OBSERVERS, dr, get_model_stl_path, imageio_ffmpeg, mi, mo, np, plt
 
@@ -41,8 +39,7 @@ def _(MODEL_NUM, get_model_stl_path):
 
 @app.cell
 def _(OBSERVER, mi, model_stl_path, np):
-    from hac.mitsuba import make_scene
-    from hac.mitsuba import MitsubaMesh, RenderingSettings
+    from hac.mitsuba import MitsubaMesh, RenderingSettings, make_scene
 
     m = MitsubaMesh.from_stl_path(model_stl_path)
 
@@ -157,8 +154,8 @@ def _(mi, renders):
 @app.cell
 def _(bitmaps, mo, np, plt):
     # Animation for rotating asteroid (notebook-friendly)
-    from matplotlib.animation import FuncAnimation
     from IPython.display import HTML
+    from matplotlib.animation import FuncAnimation
 
     # Convert Mitsuba renders to RGB bitmaps (uint8 HxWx3)
 

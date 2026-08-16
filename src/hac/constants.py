@@ -3,11 +3,21 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from hac.types import ObserverGeometry
+from dotenv import load_dotenv
 
-PROJECT_DIR = Path(__file__).resolve().parents[2]
+load_dotenv()
+
+
+_default_project_dir = Path(__file__).resolve().parents[2]
+PROJECT_DIR = Path(os.environ.get("HAC_PROJECT_DIR", _default_project_dir)).resolve()
+assert PROJECT_DIR.is_dir(), f"PROJECT_DIR {PROJECT_DIR} is not a directory"
+
+_workspace_user = os.environ.get("HAC_WORKSPACE_USER", "default")
+WORKSPACE_DIR = PROJECT_DIR / "workspaces" / _workspace_user
+WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Backwards-compatible path
 DSDIR_ENV_VAR = "DSDIR"
-
-
 def _resolve_challenge_data_dir() -> Path:
     dsdir = os.environ.get(DSDIR_ENV_VAR)
     if not dsdir:
@@ -18,9 +28,11 @@ def _resolve_challenge_data_dir() -> Path:
         challenge_data_dir = challenge_data_dir / "challenge_data"
 
     return challenge_data_dir.resolve()
+CHALLENGE_DATA_DIR = PROJECT_DIR / "challenge_data"
+if os.environ.get(DSDIR_ENV_VAR):
+    CHALLENGE_DATA_DIR = _resolve_challenge_data_dir()
 
-
-CHALLENGE_DATA_DIR = _resolve_challenge_data_dir()
+assert CHALLENGE_DATA_DIR.is_dir(), f"CHALLENGE_DATA_DIR {CHALLENGE_DATA_DIR} is not a directory"
 
 # Maps position id to camera angle alpha in degrees
 # See: https://fips.fi/data-challenges/helsinki-asteroid-challenge-2026/

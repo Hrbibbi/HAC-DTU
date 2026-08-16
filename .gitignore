@@ -18,3 +18,7 @@ __marimo__/
 
 # Editor
 *.code-workspace
+
+# Env
+.env
+

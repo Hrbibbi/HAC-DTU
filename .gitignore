@@ -16,3 +16,5 @@ __pycache__/
 # Marimo
 __marimo__/
 
+# Editor
+*.code-workspace

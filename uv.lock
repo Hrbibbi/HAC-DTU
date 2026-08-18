@@ -371,6 +371,7 @@ dependencies = [
     { name = "seaborn" },
     { name = "tqdm" },
     { name = "trimesh", extra = ["recommend"] },
+    { name = "ujson5" },
 ]
 
 [package.dev-dependencies]
@@ -398,6 +399,7 @@ requires-dist = [
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "tqdm", specifier = ">=4.70.0" },
     { name = "trimesh", extras = ["recommend"], specifier = ">=4.12.2" },
+    { name = "ujson5", specifier = ">=1.0.1" },
 ]
 
 [package.metadata.requires-dev]
@@ -1566,6 +1568,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/92/ff/5a28bdfd8c3ebec42564ac7d0e54ca3db65044a9314a97f9564fa7a1e926/tzdata-2026.3.tar.gz", hash = "sha256:4a1518b8993086a7982523e071643f3c0e5f213e75b21318e78bcabfff9d1415", size = 198674, upload-time = "2026-07-10T08:50:37.887Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e5/6d/b53b99a9f2766d095985947a5782f1702cabb129a34f7a802d7197af832f/tzdata-2026.3-py2.py3-none-any.whl", hash = "sha256:dc096730c87af6cab1b171c9d532be840741ff5d459015e7f6947bd7d7e54931", size = 348168, upload-time = "2026-07-10T08:50:36.46Z" },
+]
+
+[[package]]
+name = "ujson5"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9b/ed/d3761b2b6d75399d3fa0528e72e88319eff63873d4c99fdc70afaabed521/ujson5-1.0.1.tar.gz", hash = "sha256:df8ba1b1052bc7dd0504c5db7a016c527aff9ea53618525069d1f901322fd15d", size = 752145, upload-time = "2025-03-19T07:44:25.654Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c4/b0/617833346a32d6b83b0f5de04bd45f3da0d0f03e1383ed20d1cea7b8453c/ujson5-1.0.1-py3-none-any.whl", hash = "sha256:ec8d686980f73ebc0b560b71055dc6444e31f52058f9cd468e75ba38e60fb92c", size = 26801, upload-time = "2025-03-19T07:44:23.903Z" },
 ]
 
 [[package]]

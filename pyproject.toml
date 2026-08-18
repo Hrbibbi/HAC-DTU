@@ -26,6 +26,7 @@ dependencies = [
     "seaborn>=0.13.2",
     "tqdm>=4.70.0",
     "trimesh[recommend]>=4.12.2",
+    "ujson5>=1.0.1",
 ]
 
 [dependency-groups]

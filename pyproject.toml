@@ -6,7 +6,8 @@ readme = "README.md"
 authors = [
     { name = "Jeppe Klitgaard", email = "hi@jeppe.science" },
     { name = "Ishak Ayad", email = "ishak.ayad@centralesupelec.fr" },
-    { name = "Christian Deding Nielsen", email = "cadni@dtu.dk"}
+    { name = "Christian Deding Nielsen", email = "cadni@dtu.dk"},
+    { name = "David Wang Johansen", email = "s214743@dtu.dk"},
 ]
 requires-python = ">=3.14"
 dependencies = [

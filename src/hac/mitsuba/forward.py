@@ -13,6 +13,7 @@ from hac.mitsuba.scene import (
     RenderingSettings,
     make_batch_scene,
 )
+from hac.constants import INTENSITY_CURVE_THRESHOLD
 from hac.types import ObserverGeometry
 
 
@@ -107,7 +108,18 @@ class ForwardModel:
 
     def render_lightcurves(self, *, seed: int = 0):
         """Render mean-normalized intensity curves for every observer."""
-        lightcurves = dr.sum(self.render(seed=seed), axis=(2, 3, 4))
+        frames = self.render(seed=seed)
+
+        # The original threshold assumes the scale [0, 255]. Mitsuba does not seem to be scaled to
+        # [0, 1] since there were some maxes around 0.31-0.32 from inspection stepping through this.
+        # So we scale relative to max:
+        threshold = (INTENSITY_CURVE_THRESHOLD / 255.0) * dr.max(frames)
+        thresholded_frames = dr.select(
+            frames > threshold,
+            frames,
+            0.0,
+        )
+        lightcurves = dr.sum(thresholded_frames, axis=(2, 3, 4))
         observer_means = dr.reshape(
             dr.mean(lightcurves, axis=1),
             (self.observer_count, 1),

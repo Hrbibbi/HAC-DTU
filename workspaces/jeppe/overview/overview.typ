@@ -174,9 +174,9 @@ By inspecting frames from the Blender-simulated videos, we can clear see signifi
       image("model2_0top_view_real_19sec.png", height: 8cm),
       caption: [
         An equivalent frame from the real video for model 2. The elevation angle is expected to be the same as in the simulation, but we observe a much smaller perspective distortion, which suggests that the camera is much further away. The orthographic assumption may be justified for the real video.
-      ]
+      ],
     ) <fig:model2_real_perspective>
-  ]
+  ],
 )
 
 == Camera Position Calibration <sec:camera_calibration>
@@ -195,7 +195,7 @@ While producing the registrations was somewhat laborious, the resulting camera c
       image("model_1_simulation_0center_frame0_debug.png", height: 7.5cm),
       caption: [
         Image showing the registrations for model 1 overlaid the first frame of the simulation video `center0.mp4`.
-      ]
+      ],
     ) <fig:model1_simulation_registration_debug>
   ],
   [
@@ -203,9 +203,9 @@ While producing the registrations was somewhat laborious, the resulting camera c
       image("model_3_simulation_0center_frame0_debug.png", height: 7.5cm),
       caption: [
         Image showing the registrations for model 3 overlaid the first frame of the simulation video `center0.mp4`.
-      ]
+      ],
     ) <fig:model3_simulation_registration_debug2>
-  ]
+  ],
 )
 
 The obtained camera positions and orientations are summarised in @tbl:camera_position_estimates alongside the estimated standard deviation of the camera-object distance, $r_"obs"$.
@@ -214,11 +214,19 @@ The obtained camera positions and orientations are summarised in @tbl:camera_pos
   table(
     columns: 7,
     align: (right, right, right, right, right, right, right),
-    table.header([*Asteroid*], [*Dataset*], [*View*], [*Frame*], [*Elevation, $α med [°]$,*], [*Azimuth, $θ med [°]$*], [*Distance, $r_"obs"$*]),
-    "Model 1", `simulated`, `0center` , $0$, $0.29$, $179.7$, $3.98±0.10$,
-    "Model 2", `simulated`, `0bottom` , $0$, $-21.47$, $180.0$, $7.42±0.32$,
-    "Model 2", `simulated`, `0top` , $0$, $21.47$, $180.0$, $7.41±0.32$,
-    "Model 3", `simulated`, `0center` , $0$, $0.13$, $180.0$, $4.96±0.29$,
+    table.header(
+      [*Asteroid*],
+      [*Dataset*],
+      [*View*],
+      [*Frame*],
+      [*Elevation, $α med [°]$,*],
+      [*Azimuth, $θ med [°]$*],
+      [*Distance, $r_"obs"$*],
+    ),
+    "Model 1", `simulated`, `0center`, $0$, $0.29$, $179.7$, $3.98±0.10$,
+    "Model 2", `simulated`, `0bottom`, $0$, $-21.47$, $180.0$, $7.42±0.32$,
+    "Model 2", `simulated`, `0top`, $0$, $21.47$, $180.0$, $7.41±0.32$,
+    "Model 3", `simulated`, `0center`, $0$, $0.13$, $180.0$, $4.96±0.29$,
   ),
   caption: [Obtained camera positions and orientations. ],
 ) <tbl:camera_position_estimates>
@@ -331,8 +339,10 @@ The following algorithm has complexity $cal(O)(N^2)$ and can be used to determin
   - Polychromaticity
 
 We can get away with simpler algorithms, in particular many papers seem to prefer doing the initial convex checks (visibility + illumination).
+
 = LLM Disclosure <sec:llm>
 
 The code for determining the camera position and orientation from the correspondances was generated with assistance of an LLM. Similarly, the summary of the perspective camera fitting in @sec:perspective_camera_fitting was produced with help from an LLM.
 
+#pagebreak(weak: true)
 #bibliography("references.bib")

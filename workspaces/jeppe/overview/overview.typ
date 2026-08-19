@@ -328,11 +328,68 @@ $
 
 = Ray-Tracing <sec:ray_tracing>
 
-Several algorithms exist, where it should be noted that we only require a relatively simple ray-tracing algorithm here due to the many simplifications that are possible here as opposed to the general case. For instance, we may assume monochromaticity and ignore atmospheric refraction if we assume the observer is unobstructed by an atmosphere.
+Several algorithms exist, where it should be noted that we only require a relatively simple ray-tracing algorithm here due to the many simplifications that are possible here as opposed to the general case. For instance, we may assume monochromaticity and ignore atmospheric refraction if we assume the observer is unobstructed by an atmosphere. See also @sec:conclusions_2026_06_19.
 
-The following algorithm has complexity $cal(O)(N^2)$ and can be used to determine _convex hull_.
+A flexible renderer is the Mitsuba framework, which is a research-oriented renderer with inverse rendering capabilities.
 
-== Conclusions 2026-06-19
+Mitsuba-specific considerations are covered below in @sec:mitsuba
+
+= Mitsuba <sec:mitsuba>
+This section is a 'living document' trying to explain some of the considerations and details of the Mitsuba model.
+
+== Variants
+In Mitsuba variants describe the data type used to model the light transform, see https://mitsuba.readthedocs.io/en/latest/src/key_topics/variants.html.
+
+We want to model just the _luminance_ (single-channel) light levels, and we require auto-diff support (`ad`) and either CUDA or LLVM support, which gives us variants:
+- `cuda_ad_mono` (GPU)
+- `llvm_ad_mono` (CPU)
+
+== Scene <sec:scene>
+We need to use a single scene to render everything, which is set up by referencing a single mesh instance at different orientations and translations along the $z$-axis.
+
+This is set up in `hac.mitsuba.scene`, see @fig:batch_scene for a visualisation of the scene.
+
+#figure(
+  image("batch_scene.png", height: 6cm),
+  caption: [Batch scene setup for Asteroid 3, see `mitsuba_z_stack_viewer.ipynb` for details.],
+) <fig:batch_scene>
+
+== Forward Model
+
+Within the scene construct described in @sec:scene, we also include parameters of the forward model that are used to render the views that are later turned into light curves. An example of the rendered views prior to
+reduction into light-curves is shown in @fig:rendered_views.
+
+#figure(
+  image("batch_scene_projections.png", height: 8cm),
+  caption: [
+    Subset of sensor renderings in a batch scene for asteroid 3 using Mitsuba forward model.
+    Phases are $𝜙 ∈ {0°, 90°, 180°}$ across, respectively.
+  ],
+) <fig:rendered_views>
+
+== Optimising Parameters of Forward Model
+
+We can use the known geometry and given videos for the first 3 models to optimise the parameters of the forward model.
+
+Unfortunately, the organisers of the challenge have used _perspective rendering for the videos instead of orthographic rendering_. This, combined with the fact that the distance between the asteroid and camera is fairly small#footnote[The distance appears to be approximately 7.3 units for model 2, where 2 is the height of the model as given by the challenge description.] and would violate any orthographic assumption, means that we need to produce a reasonable guess of the camera position (alongside the given orientations) in order to produce a reasonable forward model.
+Intuitively, differences arising from the geometry of the object and aberrations stemming from the perspective projection are not easily (at all?) discernable from the perspective of inverse rendering.
+
+Problematically, we believe that the organisers have not used a single, consistent combination of camera positions and object scalings for the videos, which makes it difficult, if not impossible, to produce a forward model that is consistent across all the models. Since the videos are not available for models 4 – 10, our only hope is that the distances and object scales are _roughly_ consistent across the models.
+
+Even if we were able to incorporate the camera position into the optimisation, this is easily achieved with Mitsuba given the constraints described in:
+- #link("https://github.com/mitsuba-renderer/mitsuba3/commit/132a3bce69f2ddbff3d434964efb4441a4d37a02")
+- #link("https://github.com/mitsuba-renderer/mitsuba3/discussions/151#discussioncomment-7097927")
+- #link("https://github.com/mitsuba-renderer/mitsuba3/issues/1439")
+
+See #link("https://teams.microsoft.com/l/message/19:Ahm9wVNt8Tp4g3ZwMmA2b8xUaKykOoriOH_wpebIM-Q1@thread.tacv2/1785877381328?tenantId=f251f123-c9ce-448e-9277-34bb285911d9&groupId=0129ab18-d614-45eb-8a03-b368c443abaa&parentMessageId=1785877381328&teamName=Helsinki%20Asteroid%20Challenge%202026&channelName=General&createdTime=1785877381328", "discussion on Teams") for more details.
+
+As a best-effort estimate, we can infer the camera position from the simulated videos of the first 3 models. According to the organisers documentation, care has been taken to make the distance and object scaling consistent between the blender simulated video and the real video. Since the videos are not angle synchronised and doing so would be a bit of effort, we only infer the camera positions from the Blender data.
+
+= Other
+
+This section contains bits and bobs that don't fit elsewhere in the document.
+
+== Conclusions 2026-06-19 <sec:conclusions_2026_06_19>
 - Standard fully-featured ray tracing algorithms are a poor fit, as we do not need things like:
   - Refraction
   - (Multiple scattering)

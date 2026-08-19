@@ -1,9 +1,11 @@
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import drjit as dr
 import trimesh
 
+from hac.config import config
 from hac.mesh import convert_stl_to_obj
 from hac.mitsuba.patch import mi
 
@@ -14,7 +16,12 @@ class MitsubaMesh:
 
     @classmethod
     def from_stl_path(cls, stl_path: Path) -> MitsubaMesh:
-        obj_path = stl_path.with_suffix(".obj")
+        if config.store_temp_obj_files_in_tempdir:
+            temp_dir = Path(tempfile.gettempdir())
+            obj_path = temp_dir / stl_path.with_suffix(".obj").name
+        else:
+            obj_path = stl_path.with_suffix(".obj")
+
         convert_stl_to_obj(stl_path, obj_path)
 
         return cls(obj_path=obj_path)
@@ -27,9 +34,7 @@ class MitsubaMesh:
         return mesh
 
 
-def normalize_positions_to_challenge_cylinder(
-    flat_positions, target_radius: float
-):
+def normalize_positions_to_challenge_cylinder(flat_positions, target_radius: float):
     """Differentiably normalize positions into the known challenge cylinder."""
     vertex_count = dr.width(flat_positions) // 3
     vertex_indices = dr.arange(mi.UInt, vertex_count)

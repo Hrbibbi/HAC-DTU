@@ -1,4 +1,5 @@
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -144,6 +145,7 @@ def _load_batch_scene(
     observers: dict[str, ObserverGeometry],
     rendering_settings: RenderingSettings,
     minimum_projected_phase_center_separation: float,
+    integrator: Mapping[str, Any] | None = None,
 ):
     observer_items = tuple(observers.items())
     observer_count = len(observer_items)
@@ -218,22 +220,28 @@ def _load_batch_scene(
         },
     }
 
+    scene_dict: dict[str, Any] = {
+        "type": "scene",
+        # direct_projective supports the edge-aware silhouette gradients that
+        # geometry optimization needs. BSDF-only optimization has no such
+        # requirement and can use a cheaper, lower-variance integrator instead.
+        "integrator": dict(integrator)
+        if integrator is not None
+        else {"type": "direct_projective"},
+        "sensor": batch_sensor,
+        "sun": {
+            "type": "directional",
+            "direction": SUN_DIRECTION.tolist(),
+            "irradiance": {
+                "type": "rawconstant",
+                "value": 1.0,
+            },
+        },
+    }
+
     scene = mi.load_dict(
         {
-            "type": "scene",
-            "integrator": {
-                "type": "direct_projective",
-                # TODO: Maybe prb_projective and add max_depth?
-            },
-            "sensor": batch_sensor,
-            "sun": {
-                "type": "directional",
-                "direction": SUN_DIRECTION.tolist(),
-                "irradiance": {
-                    "type": "rawconstant",
-                    "value": 1.0,
-                },
-            },
+            **scene_dict,
             # All phases reference this one shape group. Mitsuba consequently
             # stores one vertex array and accumulates every phase's gradients
             # into the same underlying mesh parameters.
@@ -277,6 +285,7 @@ def make_batch_scene(
     bounding_cylinder_radius: float | None = None,
     normalize_mesh: bool = True,
     minimum_projected_phase_center_separation: float = MIN_PROJECTED_PHASE_CENTER_SEPARATION,
+    integrator: Mapping[str, Any] | None = None,
 ):
     """
     Build one scene containing every requested rotation and observer.
@@ -300,6 +309,11 @@ def make_batch_scene(
         minimum_projected_phase_center_separation: Lower bound on the projected
             separation between phase centers. Larger mesh-based exclusion
             distances still take precedence.
+        integrator: Mitsuba integrator plugin dict. Defaults to
+            ``{"type": "direct_projective"}``, which is required for geometry
+            (silhouette) gradients. Optimizations that never differentiate
+            shape parameters can pass a cheaper integrator, e.g.
+            ``{"type": "prb", "max_depth": 2}``.
 
     Returns:
         The loaded Mitsuba scene and the exact world-space layout used for it.
@@ -349,6 +363,7 @@ def make_batch_scene(
                 observers=observers,
                 rendering_settings=rendering_settings,
                 minimum_projected_phase_center_separation=minimum_projected_phase_center_separation,
+                integrator=integrator,
             )
 
     return _load_batch_scene(
@@ -358,4 +373,5 @@ def make_batch_scene(
         observers=observers,
         rendering_settings=rendering_settings,
         minimum_projected_phase_center_separation=minimum_projected_phase_center_separation,
+        integrator=integrator,
     )

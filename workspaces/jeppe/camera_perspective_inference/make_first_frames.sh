@@ -2,6 +2,9 @@
 set -euo pipefail
 
 input_folders=(
+  "/work3/projects/HAC-DTU/challenge_data/AsteroidModel01_shape_public/Asteroid1_videos_simulation_orthographic"
+  "/work3/projects/HAC-DTU/challenge_data/AsteroidModel02_shape_public/Asteroid2_videos_simulation_orthographic"
+  "/work3/projects/HAC-DTU/challenge_data/AsteroidModel03_shape_public/Asteroid3_videos_simulation_orthographic"
   "/work3/projects/HAC-DTU/challenge_data/AsteroidModel01_shape_public/Asteroid1_videos_simulation"
   "/work3/projects/HAC-DTU/challenge_data/AsteroidModel02_shape_public/Asteroid2_videos_simulation"
   "/work3/projects/HAC-DTU/challenge_data/AsteroidModel03_shape_public/Asteroid3_videos_simulation"
@@ -11,6 +14,9 @@ input_folders=(
 )
 
 output_folders=(
+  "/work3/projects/HAC-DTU/workspaces/jeppe/camera_perspective_inference/first_frames/model_1_simulation_orthographic"
+  "/work3/projects/HAC-DTU/workspaces/jeppe/camera_perspective_inference/first_frames/model_2_simulation_orthographic"
+  "/work3/projects/HAC-DTU/workspaces/jeppe/camera_perspective_inference/first_frames/model_3_simulation_orthographic"
   "/work3/projects/HAC-DTU/workspaces/jeppe/camera_perspective_inference/first_frames/model_1_simulation"
   "/work3/projects/HAC-DTU/workspaces/jeppe/camera_perspective_inference/first_frames/model_2_simulation"
   "/work3/projects/HAC-DTU/workspaces/jeppe/camera_perspective_inference/first_frames/model_3_simulation"
@@ -32,7 +38,7 @@ for i in "${!input_folders[@]}"; do
 
   printf 'Input folder: <%q>\n' "$input_folder"
 
-  command find "$input_folder" -maxdepth 1 -type f -iname '*.mp4' -print0 |
+  command find "$input_folder" -maxdepth 2 -type f -iname '*.mp4' -print0 |
   while IFS= read -r -d '' video; do
     # Guard against a tool returning a path without its initial slash.
     [[ "$video" == /* ]] || video="/$video"

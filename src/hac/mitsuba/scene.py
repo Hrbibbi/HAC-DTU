@@ -1,8 +1,9 @@
+import copy
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
@@ -19,7 +20,11 @@ ROTATION_DIRECTION = (
 
 # Default floor for projected separation between phase centers.
 MIN_PROJECTED_PHASE_CENTER_SEPARATION = 5.0
-ORTHOGRAPHIC_FRAMING_MARGIN = 1.25
+ORTHOGRAPHIC_FRAMING_MARGIN = 1.10
+PERSPECTIVE_NEAR_CLIP = 0.01
+PERSPECTIVE_FAR_CLIP = 10_000.0
+
+Projection = Literal["orthographic", "perspective"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +103,7 @@ def _make_batch_scene_layout(
     n_phases: int,
     observers: dict[str, ObserverGeometry],
     minimum_projected_phase_center_separation: float,
+    orthographic_view_scale_override: float | None = None,
 ) -> BatchSceneLayout:
     observer_items = tuple(observers.items())
     observer_geometries = tuple(observer for _, observer in observer_items)
@@ -106,7 +112,16 @@ def _make_batch_scene_layout(
     # mesh. Besides setting the camera scale, this lets unusually large input
     # meshes increase the separation instead of silently violating isolation.
     asteroid_radius = float(np.max(np.linalg.norm(mesh_vertices, axis=1)))
-    orthographic_view_scale = ORTHOGRAPHIC_FRAMING_MARGIN * asteroid_radius
+    orthographic_view_scale = (
+        ORTHOGRAPHIC_FRAMING_MARGIN * asteroid_radius
+        if orthographic_view_scale_override is None
+        else float(orthographic_view_scale_override)
+    )
+    if orthographic_view_scale <= 0.0:
+        raise ValueError(
+            "orthographic_view_scale_override must be positive when provided; "
+            f"got {orthographic_view_scale_override}."
+        )
 
     # Keep phase silhouettes outside every camera crop and prevent different
     # phase instances from shadowing one another along the directional light.
@@ -146,6 +161,9 @@ def _load_batch_scene(
     rendering_settings: RenderingSettings,
     minimum_projected_phase_center_separation: float,
     integrator: Mapping[str, Any] | None = None,
+    bsdf: Mapping[str, Any] | None = None,
+    projection: Projection = "orthographic",
+    orthographic_view_scale_override: float | None = None,
 ):
     observer_items = tuple(observers.items())
     observer_count = len(observer_items)
@@ -155,8 +173,23 @@ def _load_batch_scene(
         n_phases,
         observers,
         minimum_projected_phase_center_separation,
+        orthographic_view_scale_override,
     )
     offsets = layout.phase_offsets
+
+    if projection == "perspective":
+        minimum_distance = layout.asteroid_radius + PERSPECTIVE_NEAR_CLIP
+        invalid_distances = {
+            name: observer.r_obs
+            for name, observer in observer_items
+            if observer.r_obs <= minimum_distance
+        }
+        if invalid_distances:
+            raise ValueError(
+                "Perspective observers must lie outside the asteroid bounding "
+                f"sphere (minimum distance {minimum_distance}); got "
+                f"{invalid_distances}."
+            )
 
     def sample_indices(sample_index: int) -> tuple[int, int]:
         # Samples are observer-major: all phases for observer 0, followed by
@@ -181,14 +214,53 @@ def _load_batch_scene(
 
         # Translate the observer together with its intended phase instance.
         # This preserves the requested viewing geometry while centering the
-        # orthographic crop on exactly one member of the z stack.
-        return mi.ScalarTransform4f.look_at(
+        # camera on exactly one member of the z stack.
+        transform = mi.ScalarTransform4f.look_at(
             origin=sensor_position.tolist(),
             target=instance_position.tolist(),
             up=UP_DIRECTION.tolist(),
-        ) @ mi.ScalarTransform4f.scale(
-            [layout.orthographic_view_scale, layout.orthographic_view_scale, 1.0]
         )
+        if projection == "orthographic":
+            transform = transform @ mi.ScalarTransform4f.scale(
+                [
+                    layout.orthographic_view_scale,
+                    layout.orthographic_view_scale,
+                    1.0,
+                ]
+            )
+        return transform
+
+    def sensor_dict(sample_index: int) -> dict[str, Any]:
+        observer_index, _ = sample_indices(sample_index)
+        sensor: dict[str, Any] = {
+            "type": projection,
+            "to_world": sensor_transform(sample_index),
+            "film": {
+                "type": "hdrfilm",
+                "pixel_format": "luminance",
+                "width": rendering_settings.width,
+                "height": rendering_settings.height,
+                "sample_border": True,
+            },
+        }
+        if projection == "perspective":
+            observer_distance = observer_items[observer_index][1].r_obs
+            horizontal_half_extent = layout.orthographic_view_scale * max(
+                1.0, rendering_settings.width / rendering_settings.height
+            )
+            sensor.update(
+                {
+                    "fov": float(
+                        np.degrees(
+                            2.0 * np.arctan(horizontal_half_extent / observer_distance)
+                        )
+                    ),
+                    "fov_axis": "x",
+                    "near_clip": PERSPECTIVE_NEAR_CLIP,
+                    "far_clip": PERSPECTIVE_FAR_CLIP,
+                }
+            )
+        return sensor
 
     batch_sensor = {
         "type": "batch",
@@ -205,17 +277,7 @@ def _load_batch_scene(
             "rfilter": {"type": "gaussian"},
         },
         **{
-            f"sensor_{sample_index:04d}": {
-                "type": "orthographic",
-                "to_world": sensor_transform(sample_index),
-                "film": {
-                    "type": "hdrfilm",
-                    "pixel_format": "luminance",
-                    "width": rendering_settings.width,
-                    "height": rendering_settings.height,
-                    "sample_border": True,
-                },
-            }
+            f"sensor_{sample_index:04d}": sensor_dict(sample_index)
             for sample_index in range(sample_count)
         },
     }
@@ -233,11 +295,23 @@ def _load_batch_scene(
             "type": "directional",
             "direction": SUN_DIRECTION.tolist(),
             "irradiance": {
-                "type": "rawconstant",
+                "type": "uniform",
                 "value": 1.0,
             },
         },
     }
+
+    mesh_bsdf = (
+        {
+            "type": "diffuse",
+            "reflectance": {
+                "type": "rawconstant",
+                "value": 1.0,
+            },
+        }
+        if bsdf is None
+        else copy.deepcopy(dict(bsdf))
+    )
 
     scene = mi.load_dict(
         {
@@ -251,13 +325,7 @@ def _load_batch_scene(
                     "type": "obj",
                     "filename": str(mesh_obj_path),
                     "face_normals": True,
-                    "bsdf": {
-                        "type": "diffuse",
-                        "reflectance": {
-                            "type": "rawconstant",
-                            "value": 1.0,
-                        },
-                    },
+                    "bsdf": mesh_bsdf,
                 },
             },
             **{
@@ -286,6 +354,9 @@ def make_batch_scene(
     normalize_mesh: bool = True,
     minimum_projected_phase_center_separation: float = MIN_PROJECTED_PHASE_CENTER_SEPARATION,
     integrator: Mapping[str, Any] | None = None,
+    bsdf: Mapping[str, Any] | None = None,
+    projection: Projection = "orthographic",
+    orthographic_view_scale_override: float | None = None,
 ):
     """
     Build one scene containing every requested rotation and observer.
@@ -314,6 +385,11 @@ def make_batch_scene(
             (silhouette) gradients. Optimizations that never differentiate
             shape parameters can pass a cheaper integrator, e.g.
             ``{"type": "prb", "max_depth": 2}``.
+        bsdf: Optional Mitsuba BSDF plugin dictionary. Defaults to the existing
+            unit-diffuse material.
+        projection: Camera projection used by every batch sensor.
+        orthographic_view_scale_override: Optional shared framing scale. The
+            same scale determines perspective FOV when projection is perspective.
 
     Returns:
         The loaded Mitsuba scene and the exact world-space layout used for it.
@@ -331,6 +407,8 @@ def make_batch_scene(
         raise ValueError("Rendering width, height, and spp must all be positive.")
     if minimum_projected_phase_center_separation <= 0:
         raise ValueError("minimum_projected_phase_center_separation must be positive.")
+    if projection not in ("orthographic", "perspective"):
+        raise ValueError(f"Unknown projection {projection!r}.")
 
     mesh_trimesh = mesh.to_trimesh()
     if len(mesh_trimesh.vertices) == 0:
@@ -364,6 +442,9 @@ def make_batch_scene(
                 rendering_settings=rendering_settings,
                 minimum_projected_phase_center_separation=minimum_projected_phase_center_separation,
                 integrator=integrator,
+                bsdf=bsdf,
+                projection=projection,
+                orthographic_view_scale_override=orthographic_view_scale_override,
             )
 
     return _load_batch_scene(
@@ -374,4 +455,7 @@ def make_batch_scene(
         rendering_settings=rendering_settings,
         minimum_projected_phase_center_separation=minimum_projected_phase_center_separation,
         integrator=integrator,
+        bsdf=bsdf,
+        projection=projection,
+        orthographic_view_scale_override=orthographic_view_scale_override,
     )

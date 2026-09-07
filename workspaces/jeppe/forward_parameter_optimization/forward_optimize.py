@@ -1,46 +1,95 @@
+"""
+Jointly fit shared canonical BSDF parameters across several known models.
+"""
+
 import os
 
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "1")
 
 import argparse
+import copy
 import datetime
 import json
 import math
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import drjit as dr
 import matplotlib.pyplot as plt
 import mitsuba as mi
 import numpy as np
 import trimesh
+from skimage.filters import threshold_otsu
 
 mi.set_variant(os.environ.get("MITSUBA_VARIANT", "cuda_ad_mono"))
 
-import forward_optimize_v3 as v3
-from hac.constants import MODEL_BASE_RADII, WORKSPACE_DIR
-from hac.data import get_model_stl_path
+from hac.constants import MODEL_BASE_RADII, OBSERVERS, WORKSPACE_DIR
+from hac.data import get_model_stl_path, load_data
 from hac.mesh import normalize_mesh_to_challenge_cylinder
-from hac.mitsuba.forward import ForwardModel
-from hac.mitsuba.scene import RenderingSettings
+from hac.mitsuba.forward import (
+    ForwardModel,
+    reduction_binary_smooth,
+    reduction_intensity_smooth,
+)
+from hac.mitsuba.mesh import MitsubaMesh
+from hac.mitsuba.scene import Projection, RenderingSettings
+from hac.mitsuba.visualize import render_forward_views
+from hac.types import ObserverGeometry
 
+
+EXPERIMENTS = tuple(OBSERVERS)
+
+OPTIMIZATION_PHASES = 30
+OPTIMIZATION_WIDTH = 128
+OPTIMIZATION_HEIGHT = 128
+OPTIMIZATION_SPP = 16
+OPTIMIZATION_SPP_GRAD = 16
+DEFAULT_ITERATIONS = 100
+DEFAULT_INFO_INTERVAL = 10
+LEARNING_RATE = 8e-3
+EARLY_STOP_PATIENCE = 15
+
+FINAL_SPP = 64
+FINAL_SEED = 20260819
+
+BINARY_SOFT_THRESHOLD_TEMPERATURE = 0.02
+BOUND_SATURATION_FRACTION = 1e-3
+MAX_KNOWN_MODEL_FACE_COUNT = 100_000
 
 DEFAULT_MODEL_NUMS = (1, 2, 3)
 DEFAULT_VALIDATION_SPP = 32
 VALIDATION_SEED = 20260821
 
+DataSource = Literal["real", "simulated", "both"]
+CurveType = Literal["intensity", "binary"]
+
+
+@dataclass(frozen=True, slots=True)
+class OptimizedParameter:
+    path: str
+    lower: float
+    upper: float
+
+
+@dataclass(frozen=True, slots=True)
+class BsdfConfiguration:
+    name: str
+    bsdf: dict[str, Any]
+    optimize: tuple[OptimizedParameter, ...]
+
 
 @dataclass(frozen=True, slots=True)
 class RunConfiguration:
     model_nums: tuple[int, ...]
-    data_source: v3.DataSource
-    curve_type: v3.CurveType
+    data_source: DataSource
+    curve_type: CurveType
     camera_distance: float | None
     simulated_distance: float | None
-    bsdf_configurations: tuple[v3.BsdfConfiguration, ...]
+    bsdf_configurations: tuple[BsdfConfiguration, ...]
     output_dir: Path
     iterations: int
     info_interval: int
@@ -56,7 +105,7 @@ class RunConfiguration:
         return distances
 
     @property
-    def projection(self) -> v3.Projection:
+    def projection(self) -> Projection:
         perspective_flags = {
             distance is not None for distance in self.observer_distances.values()
         }
@@ -84,6 +133,393 @@ class ModelState:
     forward: ForwardModel
     binary_thresholds: np.ndarray | None
     parameter_keys: dict[str, str]
+
+
+def _data_sources(data_source: DataSource) -> tuple[Literal["real", "simulated"], ...]:
+    return ("real", "simulated") if data_source == "both" else (data_source,)
+
+
+def _experiment_names(data_source: DataSource) -> tuple[str, ...]:
+    sources = _data_sources(data_source)
+    if len(sources) == 1:
+        return EXPERIMENTS
+    return tuple(
+        f"{source}/{experiment}" for source in sources for experiment in EXPERIMENTS
+    )
+
+
+def _scalar(value) -> float:
+    return float(np.asarray(value).reshape(-1)[0])
+
+
+def _load_bsdf_configurations(path: Path) -> tuple[BsdfConfiguration, ...]:
+    entries = json.loads(path.read_text())
+    if not isinstance(entries, list) or not entries:
+        raise ValueError(f"{path} must contain a non-empty JSON list.")
+
+    configurations = []
+    for entry in entries:
+        name = entry["name"]
+        bsdf = copy.deepcopy(entry["bsdf"])
+        optimize = tuple(
+            OptimizedParameter(
+                path=parameter_path,
+                lower=float(lower),
+                upper=float(upper),
+            )
+            for parameter_path, (lower, upper) in entry["optimize"].items()
+        )
+        if not optimize:
+            raise ValueError(f"BSDF configuration {name!r} optimizes no parameters.")
+        if any(parameter.lower >= parameter.upper for parameter in optimize):
+            raise ValueError(f"BSDF configuration {name!r} has invalid bounds.")
+        if bsdf["type"] == "diffuse" and any(
+            parameter.path in {"reflectance", "reflectance.value"}
+            for parameter in optimize
+        ):
+            raise ValueError(
+                f"BSDF configuration {name!r} cannot optimize diffuse reflectance: "
+                "per-observer normalization removes that global scale."
+            )
+        configurations.append(BsdfConfiguration(name, bsdf, optimize))
+    return tuple(configurations)
+
+
+def _observers(camera_distance: float | None) -> dict[str, ObserverGeometry]:
+    if camera_distance is None:
+        return dict(OBSERVERS)
+    return {
+        name: ObserverGeometry(
+            theta=observer.theta,
+            alpha=observer.alpha,
+            r_obs=camera_distance,
+        )
+        for name, observer in OBSERVERS.items()
+    }
+
+
+def _forward_observers(
+    configuration: RunConfiguration,
+) -> tuple[
+    dict[str, ObserverGeometry] | None,
+    dict[str, dict[str, ObserverGeometry]] | None,
+]:
+    groups = {
+        source: _observers(configuration.observer_distances[source])
+        for source in _data_sources(configuration.data_source)
+    }
+    if configuration.data_source == "both":
+        return None, groups
+    return next(iter(groups.values())), None
+
+
+def _resolve_parameter_key(params, path: str) -> str:
+    suffix = path if path.startswith(".") else f".{path}"
+    matches = [key for key in params.keys() if key == path or key.endswith(suffix)]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"Expected one scene parameter matching {path!r}; got {matches}."
+        )
+    return matches[0]
+
+
+def _resolve_bounds(
+    forward: ForwardModel,
+    configuration: BsdfConfiguration,
+) -> dict[str, tuple[float, float]]:
+    return {
+        _resolve_parameter_key(forward.params, parameter.path): (
+            parameter.lower,
+            parameter.upper,
+        )
+        for parameter in configuration.optimize
+    }
+
+
+def _calibrate_binary_thresholds(
+    forward: ForwardModel,
+    *,
+    seed: int,
+    spp: int,
+) -> np.ndarray:
+    with dr.suspend_grad():
+        frames = np.asarray(forward.render(seed=seed, spp=spp))
+    thresholds = np.empty(forward.observer_count, dtype=np.float32)
+    for observer_index in range(forward.observer_count):
+        phase_zero = frames[observer_index, 0, :, :, 0]
+        thresholds[observer_index] = (
+            float(phase_zero.max())
+            if phase_zero.max() <= phase_zero.min()
+            else float(threshold_otsu(phase_zero))
+        )
+    return thresholds
+
+
+def _set_reduction(
+    forward: ForwardModel,
+    curve_type: CurveType,
+    binary_thresholds: np.ndarray | None,
+) -> None:
+    if curve_type == "intensity":
+        forward.reduction_function = lambda x: reduction_intensity_smooth(
+            x, temperature=0.01
+        )
+        return
+
+    if binary_thresholds is None:
+        raise ValueError("Binary reduction requires calibrated thresholds.")
+    expected_shape = (forward.observer_count,)
+    if binary_thresholds.shape != expected_shape:
+        raise ValueError(
+            f"Expected binary thresholds with shape {expected_shape}; "
+            f"got {binary_thresholds.shape}."
+        )
+    threshold_tensor = mi.TensorXf(
+        binary_thresholds.reshape(forward.observer_count, 1, 1, 1, 1)
+    )
+    forward.reduction_function = partial(
+        reduction_binary_smooth,
+        threshold=threshold_tensor,
+        temperature=BINARY_SOFT_THRESHOLD_TEMPERATURE,
+    )
+
+
+def _build_forward(
+    mesh_path: Path,
+    bsdf_configuration: BsdfConfiguration,
+    configuration: RunConfiguration,
+    settings: RenderingSettings,
+    *,
+    binary_thresholds: np.ndarray | None = None,
+) -> tuple[
+    ForwardModel,
+    np.ndarray | None,
+    dict[str, tuple[float, float]],
+]:
+    observers, observer_groups = _forward_observers(configuration)
+    forward = ForwardModel(
+        MitsubaMesh(mesh_path),
+        n_phases=OPTIMIZATION_PHASES,
+        observers=observers,
+        observer_groups=observer_groups,
+        rendering_settings=settings,
+        normalize_mesh=False,
+        bsdf=bsdf_configuration.bsdf,
+        projection=configuration.projection,
+    )
+    bounds = _resolve_bounds(forward, bsdf_configuration)
+    forward.params.keep(list(bounds))
+    for key in bounds:
+        if np.asarray(forward.params[key]).size != 1:
+            raise ValueError(f"Optimized parameter {key} is not scalar.")
+
+    if configuration.curve_type == "binary" and binary_thresholds is None:
+        binary_thresholds = _calibrate_binary_thresholds(
+            forward,
+            seed=0,
+            spp=FINAL_SPP,
+        )
+    _set_reduction(forward, configuration.curve_type, binary_thresholds)
+    return forward, binary_thresholds, bounds
+
+
+def _fitted_bsdf(
+    configuration: BsdfConfiguration,
+    parameter_keys: Mapping[str, str],
+    parameter_values: Mapping[str, float],
+) -> dict[str, Any]:
+    fitted = copy.deepcopy(configuration.bsdf)
+    for parameter in configuration.optimize:
+        cursor = fitted
+        parts = parameter.path.split(".")
+        value = parameter_values[parameter_keys[parameter.path]]
+        assigned = False
+        for index, part in enumerate(parts[:-1]):
+            child = cursor.get(part)
+            if not isinstance(child, dict):
+                # Mitsuba traverses a scalar plugin property such as roughness
+                # as roughness.value even when its input dictionary uses
+                # roughness: 0.5. Materialize that fitted scalar directly.
+                if parts[index + 1 :] == ["value"] and part in cursor:
+                    cursor[part] = value
+                    assigned = True
+                    break
+                raise ValueError(
+                    f"Cannot assign BSDF parameter path {parameter.path!r}: "
+                    f"{part!r} is not a dictionary."
+                )
+            cursor = child
+        if assigned:
+            continue
+
+        leaf = parts[-1]
+        if leaf not in cursor:
+            raise ValueError(
+                f"Cannot assign BSDF parameter path {parameter.path!r}: "
+                f"missing leaf {leaf!r}."
+            )
+        cursor[leaf] = value
+    return fitted
+
+
+def _save_render_angles(
+    forward: ForwardModel,
+    path: Path,
+    *,
+    title: str,
+    seed: int = FINAL_SEED,
+    spp: int = OPTIMIZATION_SPP,
+) -> None:
+    with dr.suspend_grad():
+        figure, _ = render_forward_views(
+            forward,
+            seed=seed,
+            spp=spp,
+            title=title,
+            output_path=path,
+        )
+    plt.close(figure)
+
+
+def _evaluate(
+    forward: ForwardModel,
+    target,
+    *,
+    seed: int,
+    spp: int | None = None,
+    spp_grad: int = 0,
+    backpropagate: bool = False,
+) -> tuple[float, np.ndarray]:
+    frames = forward.render(seed=seed, spp=spp, spp_grad=spp_grad)
+    curves = forward.reduction_function(frames)
+    loss = dr.mean(dr.square(curves - target))
+    if backpropagate:
+        dr.backward(loss)
+
+    return _scalar(loss), np.asarray(curves).copy()
+
+
+def _plot_lightcurves(
+    path: Path,
+    target: np.ndarray,
+    initial: np.ndarray,
+    final: np.ndarray,
+    *,
+    title: str,
+    target_label: str,
+    curve_type: CurveType,
+    observer_names: Sequence[str] = EXPERIMENTS,
+) -> None:
+    observer_names = tuple(observer_names)
+    if target.shape[0] != len(observer_names):
+        raise ValueError(
+            f"Expected {len(observer_names)} target curves for the observer labels; "
+            f"got {target.shape[0]}."
+        )
+    row_count = math.ceil(len(observer_names) / 4)
+    figure, axes = plt.subplots(
+        row_count,
+        4,
+        figsize=(14, 2.6 * row_count),
+        sharex=True,
+        squeeze=False,
+    )
+    mark_every = max(1, target.shape[1] // 12)
+    for index, experiment in enumerate(observer_names):
+        axis = axes.flat[index]
+        axis.plot(
+            target[index],
+            color="black",
+            linewidth=1.8,
+            alpha=0.7,
+            label=target_label,
+            zorder=2,
+        )
+        axis.plot(
+            initial[index],
+            color="tab:orange",
+            linestyle="--",
+            marker="o",
+            markerfacecolor="none",
+            markersize=3,
+            markevery=mark_every,
+            label="Before fitting",
+            zorder=4,
+        )
+        axis.plot(
+            final[index],
+            color="tab:blue",
+            linewidth=1.3,
+            label="Fitted canonical model",
+            zorder=3,
+        )
+        axis.set_title(experiment)
+        axis.grid(alpha=0.2)
+    for axis in axes.flat[len(observer_names) :]:
+        axis.set_visible(False)
+
+    figure.supxlabel("Optimization phase sample")
+    figure.supylabel(
+        "Normalized intensity"
+        if curve_type == "intensity"
+        else "Normalized pixel count"
+    )
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    figure.legend(
+        handles,
+        labels,
+        loc="upper center",
+        ncol=3,
+        bbox_to_anchor=(0.5, 0.97),
+    )
+    figure.suptitle(title, y=0.997)
+    figure.tight_layout(rect=(0.02, 0.03, 1.0, 0.93))
+    figure.savefig(path, dpi=160)
+    plt.close(figure)
+
+
+def _resample_curve(values: np.ndarray, n_phases: int) -> np.ndarray:
+    if len(values) < n_phases:
+        raise ValueError(
+            f"Cannot resample {len(values)} native frames onto {n_phases} phases."
+        )
+    bins = np.round(np.arange(len(values)) * n_phases / len(values)).astype(int)
+    bins %= n_phases
+    counts = np.bincount(bins, minlength=n_phases)
+    sums = np.bincount(bins, weights=values, minlength=n_phases)
+    return sums / counts
+
+
+def _load_targets(
+    model_num: int,
+    data_source: DataSource,
+    curve_type: CurveType,
+) -> tuple[np.ndarray, Any]:
+    targets = []
+    for source in _data_sources(data_source):
+        data = load_data(
+            model_num=model_num,
+            origin=source,
+            curve_type=curve_type,
+        ).data
+        print(
+            f"Loaded {source} {curve_type} target lightcurves: "
+            f"{len(data)} native frames, {len(data.columns)} observers."
+        )
+        source_target = np.stack(
+            [
+                _resample_curve(
+                    np.asarray(data[experiment], dtype=float),
+                    OPTIMIZATION_PHASES,
+                )
+                for experiment in EXPERIMENTS
+            ]
+        ).astype(np.float32)
+        source_target /= np.mean(source_target, axis=1, keepdims=True)
+        targets.append(source_target)
+
+    target = np.concatenate(targets, axis=0)
+    return target, mi.TensorXf(target.copy())
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> RunConfiguration:
@@ -129,16 +565,16 @@ def _parse_args(argv: Sequence[str] | None = None) -> RunConfiguration:
     parser.add_argument(
         "--iterations",
         type=int,
-        default=v3.DEFAULT_ITERATIONS,
-        help=f"maximum optimizer iterations (default: {v3.DEFAULT_ITERATIONS})",
+        default=DEFAULT_ITERATIONS,
+        help=f"maximum optimizer iterations (default: {DEFAULT_ITERATIONS})",
     )
     parser.add_argument(
         "--info-interval",
         type=int,
-        default=v3.DEFAULT_INFO_INTERVAL,
+        default=DEFAULT_INFO_INTERVAL,
         help=(
             "run deterministic validation and save renders every N iterations "
-            f"(default: {v3.DEFAULT_INFO_INTERVAL})"
+            f"(default: {DEFAULT_INFO_INTERVAL})"
         ),
     )
     parser.add_argument(
@@ -214,29 +650,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> RunConfiguration:
         curve_type=args.curve_type,
         camera_distance=camera_distance,
         simulated_distance=simulated_distance,
-        bsdf_configurations=v3._load_bsdf_configurations(args.bsdf_configs),
+        bsdf_configurations=_load_bsdf_configurations(args.bsdf_configs),
         output_dir=args.output_dir or default_output,
         iterations=args.iterations,
         info_interval=args.info_interval,
         validation_spp=args.validation_spp,
-    )
-
-
-def _single_model_configuration(
-    configuration: RunConfiguration,
-    model_num: int,
-    bsdf_configuration: v3.BsdfConfiguration,
-) -> v3.RunConfiguration:
-    return v3.RunConfiguration(
-        model_num=model_num,
-        data_source=configuration.data_source,
-        curve_type=configuration.curve_type,
-        camera_distance=configuration.camera_distance,
-        simulated_distance=configuration.simulated_distance,
-        bsdf_configurations=(bsdf_configuration,),
-        output_dir=configuration.output_dir,
-        iterations=configuration.iterations,
-        info_interval=configuration.info_interval,
     )
 
 
@@ -250,13 +668,13 @@ def _prepare_model(
     known_model_stl = get_model_stl_path(model_num=model_num)
     known_mesh = trimesh.load_mesh(known_model_stl)
     original_face_count = len(known_mesh.faces)
-    if original_face_count > v3.MAX_KNOWN_MODEL_FACE_COUNT:
+    if original_face_count > MAX_KNOWN_MODEL_FACE_COUNT:
         print(
             f"Model {model_num}: decimating known model from "
-            f"{original_face_count:,} to {v3.MAX_KNOWN_MODEL_FACE_COUNT:,} faces."
+            f"{original_face_count:,} to {MAX_KNOWN_MODEL_FACE_COUNT:,} faces."
         )
         known_mesh = known_mesh.simplify_quadric_decimation(
-            face_count=v3.MAX_KNOWN_MODEL_FACE_COUNT
+            face_count=MAX_KNOWN_MODEL_FACE_COUNT
         )
     known_mesh = normalize_mesh_to_challenge_cylinder(
         known_mesh,
@@ -265,7 +683,7 @@ def _prepare_model(
     mesh_path = model_directory / "fixed_known_model.obj"
     known_mesh.export(mesh_path)
 
-    target_array, target_tensor = v3._load_targets(
+    target_array, target_tensor = _load_targets(
         model_num,
         configuration.data_source,
         configuration.curve_type,
@@ -281,7 +699,7 @@ def _prepare_model(
 
 
 def _logical_bounds(
-    bsdf_configuration: v3.BsdfConfiguration,
+    bsdf_configuration: BsdfConfiguration,
 ) -> dict[str, tuple[float, float]]:
     return {
         parameter.path: (parameter.lower, parameter.upper)
@@ -291,26 +709,21 @@ def _logical_bounds(
 
 def _build_model_states(
     prepared_models: Sequence[PreparedModel],
-    bsdf_configuration: v3.BsdfConfiguration,
+    bsdf_configuration: BsdfConfiguration,
     configuration: RunConfiguration,
     settings: RenderingSettings,
 ) -> list[ModelState]:
     states = []
     expected_logical_bounds = _logical_bounds(bsdf_configuration)
     for prepared in prepared_models:
-        model_configuration = _single_model_configuration(
-            configuration,
-            prepared.model_num,
-            bsdf_configuration,
-        )
-        forward, binary_thresholds, scene_bounds = v3._build_forward(
+        forward, binary_thresholds, scene_bounds = _build_forward(
             prepared.mesh_path,
             bsdf_configuration,
-            model_configuration,
+            configuration,
             settings,
         )
         parameter_keys = {
-            parameter.path: v3._resolve_parameter_key(
+            parameter.path: _resolve_parameter_key(
                 forward.params,
                 parameter.path,
             )
@@ -337,7 +750,7 @@ def _build_model_states(
 
 def _state_parameter_values(state: ModelState) -> dict[str, float]:
     return {
-        path: v3._scalar(state.forward.params[scene_key])
+        path: _scalar(state.forward.params[scene_key])
         for path, scene_key in state.parameter_keys.items()
     }
 
@@ -358,7 +771,7 @@ def _initialize_shared_optimizer(
                     f"{path!r} to {values[path]}, expected {expected}."
                 )
 
-    optimizer = mi.ad.Adam(lr=v3.LEARNING_RATE)
+    optimizer = mi.ad.Adam(lr=LEARNING_RATE)
     first_state = states[0]
     for path, scene_key in first_state.parameter_keys.items():
         optimizer[path] = first_state.forward.params[scene_key]
@@ -366,7 +779,7 @@ def _initialize_shared_optimizer(
 
 
 def _optimizer_values(optimizer, parameter_paths: Sequence[str]) -> dict[str, float]:
-    return {path: v3._scalar(optimizer[path]) for path in parameter_paths}
+    return {path: _scalar(optimizer[path]) for path in parameter_paths}
 
 
 def _apply_shared_parameters(state: ModelState, optimizer) -> None:
@@ -394,7 +807,7 @@ def _evaluate_states(
     with dr.suspend_grad():
         for model_index, state in enumerate(states):
             _apply_shared_parameters(state, optimizer)
-            loss, model_curves = v3._evaluate(
+            loss, model_curves = _evaluate(
                 state.forward,
                 state.prepared.target_tensor,
                 seed=seed + model_index,
@@ -425,7 +838,7 @@ def _save_render_history(
             / f"iteration_{iteration:0{iteration_width}d}.png"
         )
         path.parent.mkdir(parents=True, exist_ok=True)
-        v3._save_render_angles(
+        _save_render_angles(
             state.forward,
             path,
             title=(
@@ -443,7 +856,7 @@ def _saturated_shared_parameters(
 ) -> list[str]:
     saturated = []
     for path, (lower, upper) in bounds.items():
-        margin = v3.BOUND_SATURATION_FRACTION * (upper - lower)
+        margin = BOUND_SATURATION_FRACTION * (upper - lower)
         if values[path] <= lower + margin or values[path] >= upper - margin:
             saturated.append(path)
     return saturated
@@ -451,13 +864,13 @@ def _saturated_shared_parameters(
 
 def _threshold_mapping(
     thresholds: np.ndarray | None,
-    data_source: v3.DataSource,
+    data_source: DataSource,
 ) -> dict[str, float] | None:
     if thresholds is None:
         return None
     return {
         experiment: float(thresholds[index])
-        for index, experiment in enumerate(v3._experiment_names(data_source))
+        for index, experiment in enumerate(_experiment_names(data_source))
     }
 
 
@@ -505,7 +918,7 @@ def _plot_joint_loss(
 
 def _optimize_trial(
     prepared_models: Sequence[PreparedModel],
-    bsdf_configuration: v3.BsdfConfiguration,
+    bsdf_configuration: BsdfConfiguration,
     configuration: RunConfiguration,
     settings: RenderingSettings,
 ) -> dict[str, Any]:
@@ -570,10 +983,10 @@ def _optimize_trial(
             loss, _ = _loss_tensor(
                 state,
                 seed=iteration * model_count + model_index,
-                spp_grad=v3.OPTIMIZATION_SPP_GRAD,
+                spp_grad=OPTIMIZATION_SPP_GRAD,
             )
             dr.eval(loss)
-            model_loss = v3._scalar(loss)
+            model_loss = _scalar(loss)
             if not math.isfinite(model_loss):
                 raise RuntimeError(
                     f"Non-finite training loss in trial {name!r}, "
@@ -591,7 +1004,7 @@ def _optimize_trial(
         non_finite_gradient_paths = [
             path
             for path in parameter_paths
-            if not math.isfinite(v3._scalar(dr.grad(optimizer[path])))
+            if not math.isfinite(_scalar(dr.grad(optimizer[path])))
         ]
         if non_finite_gradient_paths:
             raise RuntimeError(
@@ -652,23 +1065,23 @@ def _optimize_trial(
         )
         if (
             should_validate
-            and iteration - best_iteration >= v3.EARLY_STOP_PATIENCE
+            and iteration - best_iteration >= EARLY_STOP_PATIENCE
             and iteration < configuration.iterations
         ):
             print(
                 f"{name}: stopping early after {iteration} iterations "
-                f"({v3.EARLY_STOP_PATIENCE} without improving fixed-seed "
+                f"({EARLY_STOP_PATIENCE} without improving fixed-seed "
                 "validation loss)."
             )
             break
 
     iterations_completed = len(loss_history)
-    fitted_bsdf = v3._fitted_bsdf(
+    fitted_bsdf = _fitted_bsdf(
         bsdf_configuration,
         {path: path for path in parameter_paths},
         best_parameters,
     )
-    fitted_configuration = v3.BsdfConfiguration(
+    fitted_configuration = BsdfConfiguration(
         name=name,
         bsdf=fitted_bsdf,
         # Equal constant textures may be deduplicated by Mitsuba and therefore
@@ -683,23 +1096,19 @@ def _optimize_trial(
         model_num = state.prepared.model_num
         del state.forward
         dr.flush_malloc_cache()
-        final_forward, final_thresholds, _ = v3._build_forward(
+        final_forward, final_thresholds, _ = _build_forward(
             state.prepared.mesh_path,
             fitted_configuration,
-            _single_model_configuration(
-                configuration,
-                model_num,
-                fitted_configuration,
-            ),
+            configuration,
             settings,
             binary_thresholds=state.binary_thresholds,
         )
         with dr.suspend_grad():
-            final_loss, final_curve = v3._evaluate(
+            final_loss, final_curve = _evaluate(
                 final_forward,
                 state.prepared.target_tensor,
-                seed=v3.FINAL_SEED + model_num,
-                spp=v3.FINAL_SPP,
+                seed=FINAL_SEED + model_num,
+                spp=FINAL_SPP,
             )
         final_losses[model_num] = final_loss
         final_render_path = (
@@ -707,19 +1116,19 @@ def _optimize_trial(
             / f"model{model_num}"
             / f"trial_{name}_render_angles.png"
         )
-        v3._save_render_angles(
+        _save_render_angles(
             final_forward,
             final_render_path,
             title=f"Joint fit model {model_num}: {name}, best shared fit",
-            seed=v3.FINAL_SEED + model_num,
-            spp=v3.FINAL_SPP,
+            seed=FINAL_SEED + model_num,
+            spp=FINAL_SPP,
         )
         lightcurve_path = (
             configuration.output_dir
             / f"model{model_num}"
             / f"trial_{name}_lightcurve_fit.png"
         )
-        v3._plot_lightcurves(
+        _plot_lightcurves(
             lightcurve_path,
             state.prepared.target_array,
             initial_curves[model_num],
@@ -733,7 +1142,7 @@ def _optimize_trial(
                 f"HAC {configuration.data_source} {configuration.curve_type} target"
             ),
             curve_type=configuration.curve_type,
-            observer_names=v3._experiment_names(configuration.data_source),
+            observer_names=_experiment_names(configuration.data_source),
         )
         final_model_results[model_num] = {
             "initial_validation_loss": initial_model_losses[model_num],
@@ -775,7 +1184,7 @@ def _optimize_trial(
         "observer_distances": configuration.observer_distances,
         "curve_type": configuration.curve_type,
         "binary_soft_threshold_temperature": (
-            v3.BINARY_SOFT_THRESHOLD_TEMPERATURE
+            BINARY_SOFT_THRESHOLD_TEMPERATURE
             if configuration.curve_type == "binary"
             else None
         ),
@@ -806,9 +1215,9 @@ def main(configuration: RunConfiguration) -> None:
         for model_num in configuration.model_nums
     ]
     settings = RenderingSettings(
-        width=v3.OPTIMIZATION_WIDTH,
-        height=v3.OPTIMIZATION_HEIGHT,
-        spp=v3.OPTIMIZATION_SPP,
+        width=OPTIMIZATION_WIDTH,
+        height=OPTIMIZATION_HEIGHT,
+        spp=OPTIMIZATION_SPP,
     )
 
     trial_results = []
@@ -850,15 +1259,15 @@ def main(configuration: RunConfiguration) -> None:
         },
         "forward_model": "hac.mitsuba.forward.ForwardModel",
         "integrator": "direct_projective",
-        "optimization_phases": v3.OPTIMIZATION_PHASES,
+        "optimization_phases": OPTIMIZATION_PHASES,
         "max_iterations": configuration.iterations,
         "info_interval": configuration.info_interval,
-        "learning_rate": v3.LEARNING_RATE,
-        "optimization_spp": v3.OPTIMIZATION_SPP,
-        "gradient_spp": v3.OPTIMIZATION_SPP_GRAD,
+        "learning_rate": LEARNING_RATE,
+        "optimization_spp": OPTIMIZATION_SPP,
+        "gradient_spp": OPTIMIZATION_SPP_GRAD,
         "validation_seed": VALIDATION_SEED,
         "validation_spp": configuration.validation_spp,
-        "final_spp": v3.FINAL_SPP,
+        "final_spp": FINAL_SPP,
         "best_trial_name": best["name"],
         "best_trial_final_aggregate_loss": best["final_aggregate_loss"],
         "best_trial_final_worst_model_loss": best["final_worst_model_loss"],

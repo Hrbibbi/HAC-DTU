@@ -1,0 +1,19 @@
+[
+  {
+    "name": "roughplastic_fixed_ior",
+    "bsdf": {
+      "type": "roughplastic",
+      "nonlinear": false,
+      "alpha": 0.25,
+      "int_ior": 1.55,
+      "diffuse_reflectance": {
+        "type": "rawconstant",
+        "value": 0.65
+      }
+    },
+    "optimize": {
+      "alpha": [0.0, 1.0],
+      "diffuse_reflectance.value": [0.00, 1.0]
+    }
+  }
+]

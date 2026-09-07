@@ -1,0 +1,24 @@
+[
+  {
+    "name": "blender_default_principled",
+    "bsdf": {
+      "type": "principled",
+      "base_color": {
+        "type": "rawconstant",
+        "value": 0.8
+      },
+      "metallic": 0.0,
+      "roughness": 0.5,
+      "specular": 0.5,
+      "spec_tint": 0.0,
+      "anisotropic": 0.0,
+      "sheen": 0.0,
+      "clearcoat": 0.0,
+      "spec_trans": 0.0
+    },
+    "optimize": {
+      "roughness.value": [0.02, 1.0],
+      "specular": [0.01, 1.0]
+    }
+  }
+]

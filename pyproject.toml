@@ -9,23 +9,24 @@ authors = [
     { name = "Christian Deding Nielsen", email = "cadni@dtu.dk"},
     { name = "David Wang Johansen", email = "s214743@dtu.dk"},
 ]
-requires-python = ">=3.14"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "cholespy>=2.2.0",
     "cupy-cuda13x>=14.1.1",
+    "gpytoolbox>=0.3.7",
     "imageio-ffmpeg>=0.6.0",
     "jax>=0.10.1",
     "matplotlib>=3.10.9",
     "mitsuba>=3.8.0",
     "numpy-stl[fast]>=4.0.0",
-    "numpy>=2.4.6",
+    "numpy>=2.1",
     "plotly>=6.9.0",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
     "python-dotenv>=1.2.2",
     "rtree>=1.4.1",
     "scikit-image>=0.26.0",
-    "scipy>=1.17.1",
+    "scipy>=1.13",
     "seaborn>=0.13.2",
     "tqdm>=4.70.0",
     "trimesh[recommend]>=4.12.2",

@@ -1,6 +1,10 @@
 """Optimize an HAC asteroid shape with Mitsuba Large Steps.
 
 Only supports the `direct` integrator (orthographic assumption).
+
+Optional progressive refinement: --remesh-level N (up to N loss-triggered
+Botsch-Kobbelt remeshes) or --remesh-interval K (remesh every K iterations);
+needs gpytoolbox.
 """
 
 import argparse
@@ -23,6 +27,15 @@ CurveType = Literal["intensity", "binary"]
 
 INTEGRATOR: dict[str, Any] = {"type": "direct"}
 PROJECTION: Literal["orthographic"] = "orthographic"
+
+# Remeshing is controlled only by --remesh-level or --remesh-interval; the rest
+# of the Botsch-Kobbelt / adaptive-trigger tuning is fixed here.
+_REMESH_BOTSCH_ITERATIONS = 5  # gpytoolbox remesh_botsch smoothing iterations
+_REMESH_EDGE_FACTOR = 0.5  # target edge = this x current mean edge (~4x faces)
+_REMESH_MAX_EVENTS = 8  # safety cap for --remesh-interval; also caps --remesh-level
+_REMESH_ADAPTIVE_WINDOW = 20  # iterations of loss history judged for stagnation
+_REMESH_ADAPTIVE_MIN_IMPROVEMENT = 0.02  # relative loss gain below which we remesh
+_REMESH_ADAPTIVE_COOLDOWN = 20  # minimum iterations between adaptive remeshes
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,10 +71,23 @@ class RunConfiguration:
     movie_height: int
     movie_spp: int
     movie_fps: int
+    # Exactly one of these enables remeshing; both None means fixed topology.
+    remesh_level: int | None  # up to N adaptive (loss-triggered) remeshes
+    remesh_interval: int | None  # remesh every N iterations (fixed schedule)
 
     @property
     def data_sources(self) -> tuple[DataSource, ...]:
         return (self.data_source,)
+
+    @property
+    def remesh_enabled(self) -> bool:
+        return self.remesh_level is not None or self.remesh_interval is not None
+
+    @property
+    def remesh_max_events(self) -> int:
+        if self.remesh_level is not None:
+            return min(self.remesh_level, _REMESH_MAX_EVENTS)
+        return _REMESH_MAX_EVENTS
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +212,27 @@ def parse_args(argv: Sequence[str] | None = None) -> RunConfiguration:
     parser.add_argument("--movie-height", type=int, default=512)
     parser.add_argument("--movie-spp", type=int, default=16)
     parser.add_argument("--movie-fps", type=int, default=30)
+
+    # Botsch-Kobbelt remeshing (needs gpytoolbox). Pick one style, or neither
+    # for fixed topology; all other tuning is fixed in the _REMESH_* constants.
+    remesh = parser.add_mutually_exclusive_group()
+    remesh.add_argument(
+        "--remesh-level",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "progressive refinement: up to N remeshes, each triggered when the "
+            f"training loss stagnates (N capped at {_REMESH_MAX_EVENTS})"
+        ),
+    )
+    remesh.add_argument(
+        "--remesh-interval",
+        type=int,
+        default=None,
+        metavar="ITERS",
+        help="fixed-schedule remeshing every ITERS iterations",
+    )
     args = parser.parse_args(argv)
 
     for name in (
@@ -217,6 +264,10 @@ def parse_args(argv: Sequence[str] | None = None) -> RunConfiguration:
         parser.error("--checkpoint-interval must be non-negative")
     if args.phases is not None and args.phases <= 0:
         parser.error("--phases must be positive")
+    if args.remesh_level is not None and args.remesh_level <= 0:
+        parser.error("--remesh-level must be positive")
+    if args.remesh_interval is not None and args.remesh_interval <= 0:
+        parser.error("--remesh-interval must be positive")
     if args.evaluate_reference and args.model_num > 3:
         parser.error("--evaluate-reference is only available for models 1-3")
 
@@ -252,6 +303,8 @@ def parse_args(argv: Sequence[str] | None = None) -> RunConfiguration:
         movie_height=args.movie_height,
         movie_spp=args.movie_spp,
         movie_fps=args.movie_fps,
+        remesh_level=args.remesh_level,
+        remesh_interval=args.remesh_interval,
     )
 
 
@@ -295,6 +348,66 @@ def _resolve_output_dir(configuration: RunConfiguration) -> Path:
             f"{configuration.curve_type}_{timestamp}"
         )
     )
+
+
+def _remesh_botsch(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Botsch-Kobbelt isotropic remesh (gpytoolbox), as in the Large Steps tutorial.
+
+    Target edge length is ``_REMESH_EDGE_FACTOR`` times the mesh's current mean
+    edge length (0.5 roughly quadruples the face count).
+    """
+    try:
+        from gpytoolbox import remesh_botsch
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError(
+            "remeshing requires the 'gpytoolbox' package (pip install gpytoolbox)."
+        ) from exc
+
+    edge_lengths = np.concatenate(
+        [
+            np.linalg.norm(vertices[faces[:, 1]] - vertices[faces[:, 0]], axis=1),
+            np.linalg.norm(vertices[faces[:, 2]] - vertices[faces[:, 1]], axis=1),
+            np.linalg.norm(vertices[faces[:, 0]] - vertices[faces[:, 2]], axis=1),
+        ]
+    )
+    target_edge_length = float(np.mean(edge_lengths)) * _REMESH_EDGE_FACTOR
+    new_vertices, new_faces = remesh_botsch(
+        vertices.astype(np.float64),
+        faces.astype(np.int32),
+        i=_REMESH_BOTSCH_ITERATIONS,
+        h=target_edge_length,
+        project=True,
+    )
+    return new_vertices.astype(np.float32), new_faces.astype(np.int64)
+
+
+def _should_remesh(
+    configuration: RunConfiguration,
+    iteration: int,
+    loss_history: list[float],
+    last_remesh_iteration: int,
+    event_count: int,
+) -> bool:
+    """True if a remesh should be triggered after ``iteration`` (1-based)."""
+    if not configuration.remesh_enabled:
+        return False
+    if event_count >= configuration.remesh_max_events:
+        return False
+    if configuration.remesh_interval is not None:  # fixed schedule
+        return iteration - last_remesh_iteration >= configuration.remesh_interval
+    # --remesh-level: remesh when the training loss stagnates (or rises)
+    if iteration - last_remesh_iteration < _REMESH_ADAPTIVE_COOLDOWN:
+        return False
+    if iteration < _REMESH_ADAPTIVE_WINDOW:
+        return False
+    window_start_loss = loss_history[-_REMESH_ADAPTIVE_WINDOW]
+    relative_improvement = (window_start_loss - loss_history[-1]) / max(
+        window_start_loss, 1e-12
+    )
+    return relative_improvement < _REMESH_ADAPTIVE_MIN_IMPROVEMENT
 
 
 def _prepare_initial_mesh(
@@ -353,6 +466,40 @@ def _build_forward(
         integrator=INTEGRATOR,
         projection=PROJECTION,
     )
+
+
+def _build_optimization_state(
+    mesh_path: Path,
+    configuration: RunConfiguration,
+    *,
+    n_phases: int,
+):
+    """(Re)build the forward model, Large Steps parametrization and Adam optimizer.
+
+    Called for the initial mesh and again after every remesh: Large Steps and
+    Adam are tied to a fixed vertex/face count, so a topology change rebuilds
+    both from scratch. Returns ``(forward, faces, large_steps, optimizer)``.
+    """
+    import mitsuba as mi
+
+    forward = _build_forward(mesh_path, configuration, n_phases=n_phases)
+    # Read faces before keep() drops the face parameter from params.
+    faces = _faces_numpy(forward)
+    large_steps = mi.ad.LargeSteps(
+        forward.params[forward.position_key],
+        forward.params[forward.face_key],
+        configuration.large_steps_lambda,
+    )
+    # Faces and the batch scene's thousands of static sensor/instance parameters
+    # do not change between remeshes; excluding them keeps mi.render() from
+    # traversing them every iteration. Flush access-tracking candidates first so
+    # keep() cannot leave a removed parameter pending for the next update().
+    forward.params.update()
+    forward.params.keep([forward.position_key])
+
+    optimizer = mi.ad.Adam(lr=configuration.learning_rate, uniform=True)
+    optimizer["u"] = large_steps.to_differential(forward.params[forward.position_key])
+    return forward, faces, large_steps, optimizer
 
 
 def _configure_reduction(
@@ -665,8 +812,12 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
     )
     # One render phase per kept light curve frame (index-subsampled, not resampled).
     n_phases = targets.n_phases
-    # See the training loop: only the intensity reduction is dr.freeze-safe.
-    freeze_training = configuration.curve_type == "intensity"
+    # dr.freeze is used only for the intensity reduction (the binary reduction
+    # closes over a threshold tensor freeze cannot traverse) and only without
+    # remeshing (a topology change would invalidate the frozen recording).
+    freeze_training = (
+        configuration.curve_type == "intensity" and not configuration.remesh_enabled
+    )
     _write_json(
         paths.resolved_config,
         {
@@ -682,7 +833,9 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
     initial_mesh = _prepare_initial_mesh(configuration, cylinder_radius)
     initial_mesh.export(paths.initial_mesh)
 
-    forward = _build_forward(paths.initial_mesh, configuration, n_phases=n_phases)
+    forward, faces, large_steps, optimizer = _build_optimization_state(
+        paths.initial_mesh, configuration, n_phases=n_phases
+    )
     if tuple(forward.observer_names) != targets.observer_names:
         raise RuntimeError(
             "Target/render observer order differs: "
@@ -696,7 +849,6 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
             f"Expected one shared optimizable mesh; found {position_keys}."
         )
     binary_thresholds = _configure_reduction(forward, configuration)
-    faces = _faces_numpy(forward)
     target_tensor = mi.TensorXf(targets.values.copy())
 
     initial_loss, initial_source_losses, initial_curves = _evaluate(
@@ -713,36 +865,19 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
         title=f"Model {configuration.model_num}: initial shape",
     )
 
-    large_steps = mi.ad.LargeSteps(
-        forward.params[forward.position_key],
-        forward.params[forward.face_key],
-        configuration.large_steps_lambda,
-    )
-
-    # Faces and the other scene parameters are constant during optimization.
-    # Excluding them here keeps mi.render() from traversing the batch scene's
-    # thousands of static sensor and instance parameters on every iteration.
-    # Flush access-tracking candidates first so keep() cannot leave a removed
-    # parameter pending for the next update().
-    forward.params.update()
-    forward.params.keep([forward.position_key])
-
-    optimizer = mi.ad.Adam(lr=configuration.learning_rate, uniform=True)
-    optimizer["u"] = large_steps.to_differential(forward.params[forward.position_key])
-
-    # dr.freeze cannot traverse drjit state captured in reduction_function's
-    # closure. The binary reduction closes over a per-observer threshold tensor,
-    # so only the intensity path (closure holds plain Python scalars) is frozen.
     training_step = (
         dr.freeze(_reduce_lightcurves_and_backward)
         if freeze_training
         else _reduce_lightcurves_and_backward
     )
+    remesh_events: list[dict[str, Any]] = []
+    last_remesh_iteration = 0
 
     best_loss = initial_loss
     best_iteration = 0
     best_positions = _positions_numpy(forward)
-    _export_mesh(paths.best_mesh, best_positions, faces)
+    best_faces = faces.copy()
+    _export_mesh(paths.best_mesh, best_positions, best_faces)
     training_losses: list[float] = []
     validation_history: list[dict[str, Any]] = [
         {
@@ -839,7 +974,8 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
                     best_loss = validation_loss
                     best_iteration = iteration
                     best_positions = _positions_numpy(forward)
-                    _export_mesh(paths.best_mesh, best_positions, faces)
+                    best_faces = faces.copy()
+                    _export_mesh(paths.best_mesh, best_positions, best_faces)
                     validation_checks_without_improvement = 0
                 else:
                     validation_checks_without_improvement += 1
@@ -874,10 +1010,55 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
                     )
                     break
 
+            if _should_remesh(
+                configuration,
+                iteration,
+                training_losses,
+                last_remesh_iteration,
+                len(remesh_events),
+            ):
+                current_positions = _positions_numpy(forward)
+                old_vertex_count = len(current_positions)
+                old_face_count = len(faces)
+                new_vertices, new_faces = _remesh_botsch(current_positions, faces)
+                remesh_path = paths.checkpoints / f"remesh_iter_{iteration:04d}.obj"
+                _export_mesh(remesh_path, new_vertices, new_faces)
+                del forward, large_steps, optimizer
+                dr.flush_malloc_cache()
+                forward, faces, large_steps, optimizer = _build_optimization_state(
+                    remesh_path, configuration, n_phases=n_phases
+                )
+                _configure_reduction(
+                    forward, configuration, binary_thresholds=binary_thresholds
+                )
+                last_remesh_iteration = iteration
+                remesh_events.append(
+                    {
+                        "after_iteration": iteration,
+                        "vertex_count": int(len(new_vertices)),
+                        "face_count": int(len(new_faces)),
+                        "mesh_path": str(remesh_path),
+                    }
+                )
+                _append_history(
+                    history_file,
+                    {
+                        "kind": "remesh",
+                        "iteration": iteration,
+                        "vertex_count": int(len(new_vertices)),
+                        "face_count": int(len(new_faces)),
+                    },
+                )
+                print(
+                    f"  remesh #{len(remesh_events)} after iteration {iteration}: "
+                    f"{old_vertex_count} -> {len(new_vertices)} vertices, "
+                    f"{old_face_count} -> {len(new_faces)} faces"
+                )
+
     _apply_optimizer_positions(forward, optimizer, large_steps, cylinder_radius)
     last_positions = _positions_numpy(forward)
     _export_mesh(paths.last_mesh, last_positions, faces)
-    _export_mesh(paths.best_mesh, best_positions, faces)
+    _export_mesh(paths.best_mesh, best_positions, best_faces)
 
     frozen_training_recordings = (
         training_step.n_recordings if freeze_training else 0
@@ -996,10 +1177,30 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
         "integrator": INTEGRATOR,
         "frozen_training": freeze_training,
         "frozen_training_recordings": frozen_training_recordings,
+        "remesh": {
+            "enabled": configuration.remesh_enabled,
+            "mode": (
+                None
+                if not configuration.remesh_enabled
+                else "interval"
+                if configuration.remesh_interval is not None
+                else "adaptive"
+            ),
+            "level": configuration.remesh_level,
+            "interval": configuration.remesh_interval,
+            "max_events": (
+                configuration.remesh_max_events
+                if configuration.remesh_enabled
+                else 0
+            ),
+            "edge_factor": _REMESH_EDGE_FACTOR,
+            "botsch_iterations": _REMESH_BOTSCH_ITERATIONS,
+            "events": remesh_events,
+        },
         "shared_mesh_parameter": final_forward.position_key,
         "shared_bsdf": DEFAULT_BSDF,
         "vertex_count": len(best_positions),
-        "face_count": len(faces),
+        "face_count": len(best_faces),
         "iterations_completed": iterations_completed,
         "initial_validation_loss": initial_loss,
         "initial_source_losses": initial_source_losses,

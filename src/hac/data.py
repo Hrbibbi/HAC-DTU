@@ -1,4 +1,3 @@
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -7,7 +6,7 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from hac.constants import BASE_RADII, CHALLENGE_DATA_DIR
+from hac.constants import BASE_RADII, CHALLENGE_DATA_DIR, OBSERVERS
 
 DataOrigin = Literal["real", "simulated"]
 CurveType = Literal["binary", "intensity"]
@@ -157,16 +156,6 @@ def load_data(
     )
 
 
-@dataclass(frozen=True, slots=True)
-class PreparedLightcurves:
-    """Mean-normalized targets in the same observer order as ``ForwardModel``."""
-
-    values: NDArray[np.float32]
-    observer_names: tuple[str, ...]
-    group_slices: dict[str, slice]
-    n_phases: int  # number of frames kept; render this many phases to match
-
-
 def _subsample_indices(n_native: int, n_phases: int) -> NDArray[np.intp]:
     """
     Pick ``n_phases`` native frame indices without averaging or interpolation.
@@ -186,52 +175,42 @@ def prepare_lightcurve_targets(
     data_source: DataOrigin,
     curve_type: CurveType,
     n_phases: int | None = None,
-    observer_names: Sequence[str] | None = None,
-) -> PreparedLightcurves:
+) -> NDArray[np.float32]:
     """
-    Load and mean-normalize one source's HAC curves.
+    Mean-normalized target curves as a ``(observer, phase)`` array.
+
+    Rows follow ``OBSERVERS`` order so they line up with ``ForwardModel``.
+    ``n_phases`` subsamples frames by index (no averaging); ``None`` keeps every
+    native frame.
     """
     dataset = load_data(
         model_num=model_num,
         origin=data_source,
         curve_type=curve_type,
     )
-    selected_names = (
-        tuple(dataset.data.columns)
-        if observer_names is None
-        else tuple(observer_names)
-    )
-    if not selected_names:
-        raise ValueError("observer_names must contain at least one observer.")
-    missing = [name for name in selected_names if name not in dataset.data.columns]
+    missing = [name for name in OBSERVERS if name not in dataset.data.columns]
     if missing:
         raise ValueError(
             f"Observers {missing} are missing from model {model_num} "
             f"{data_source} data."
         )
 
-    block = np.stack(
-        [dataset.data[name].to_numpy() for name in selected_names]
+    curves = np.stack(
+        [dataset.data[name].to_numpy() for name in OBSERVERS]
     ).astype(np.float32)
-    if not np.all(np.isfinite(block)):
+    if not np.all(np.isfinite(curves)):
         raise ValueError(
             f"Model {model_num} {data_source} {curve_type} curves contain "
             "non-finite samples."
         )
     if n_phases is not None:
-        block = block[:, _subsample_indices(block.shape[1], n_phases)]
+        curves = curves[:, _subsample_indices(curves.shape[1], n_phases)]
 
-    means = np.mean(block, axis=1, keepdims=True)
-    if not np.all(np.isfinite(means)) or np.any(means == 0.0):
+    means = np.mean(curves, axis=1, keepdims=True)
+    if np.any(means == 0.0):
         raise ValueError(
             f"Cannot mean-normalize model {model_num} {data_source} "
             f"{curve_type} curves."
         )
-    block /= means
-
-    return PreparedLightcurves(
-        values=block,
-        observer_names=tuple(selected_names),
-        group_slices={data_source: slice(0, len(block))},
-        n_phases=block.shape[1],
-    )
+    curves /= means
+    return curves

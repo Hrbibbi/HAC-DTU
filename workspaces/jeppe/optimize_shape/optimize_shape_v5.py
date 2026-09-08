@@ -574,21 +574,10 @@ def _apply_optimizer_positions(
     return positions
 
 
-def _source_balanced_loss(curves, target, group_slices: Mapping[str, slice]):
-    import drjit as dr
-
-    group_losses = [
-        dr.mean(dr.square(curves[group_slice] - target[group_slice]))
-        for group_slice in group_slices.values()
-    ]
-    return sum(group_losses) / len(group_losses)
-
-
 def _reduce_lightcurves_and_backward(
     frames,
     reduction_function,
     target,
-    group_slices: Mapping[str, slice],
 ):
     """Reduce rendered frames and backpropagate within a frozen AD scope.
 
@@ -598,7 +587,7 @@ def _reduce_lightcurves_and_backward(
     import drjit as dr
 
     curves = reduction_function(frames)
-    loss = _source_balanced_loss(curves, target, group_slices)
+    loss = dr.mean(dr.square(curves - target))
 
     # Frozen functions have an isolated gradient scope, so backward must be
     # part of the recording rather than applied to the returned loss later.
@@ -606,31 +595,18 @@ def _reduce_lightcurves_and_backward(
     return loss
 
 
-def _numpy_source_losses(
-    curves: np.ndarray,
-    target: np.ndarray,
-    group_slices: Mapping[str, slice],
-) -> dict[str, float]:
-    return {
-        source: float(np.mean(np.square(curves[group_slice] - target[group_slice])))
-        for source, group_slice in group_slices.items()
-    }
-
-
 def _evaluate(
     forward,
     target: np.ndarray,
-    group_slices: Mapping[str, slice],
     *,
     seed: int,
     spp: int,
-) -> tuple[float, dict[str, float], np.ndarray]:
+) -> tuple[float, np.ndarray]:
     import drjit as dr
 
     with dr.suspend_grad():
         curves = np.asarray(forward.render_lightcurves(seed=seed, spp=spp)).copy()
-    losses = _numpy_source_losses(curves, target, group_slices)
-    return float(np.mean(list(losses.values()))), losses, curves
+    return float(np.mean(np.square(curves - target))), curves
 
 
 def _check_finite(name: str, values: Any) -> None:
@@ -808,10 +784,9 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
         data_source=configuration.data_source,
         curve_type=configuration.curve_type,
         n_phases=configuration.phases,
-        observer_names=tuple(OBSERVERS),
     )
     # One render phase per kept light curve frame (index-subsampled, not resampled).
-    n_phases = targets.n_phases
+    n_phases = targets.shape[1]
     # dr.freeze is used only for the intensity reduction (the binary reduction
     # closes over a threshold tensor freeze cannot traverse) and only without
     # remeshing (a topology change would invalidate the frozen recording).
@@ -836,10 +811,10 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
     forward, faces, large_steps, optimizer = _build_optimization_state(
         paths.initial_mesh, configuration, n_phases=n_phases
     )
-    if tuple(forward.observer_names) != targets.observer_names:
+    if tuple(forward.observer_names) != tuple(OBSERVERS):
         raise RuntimeError(
             "Target/render observer order differs: "
-            f"{targets.observer_names} versus {forward.observer_names}."
+            f"{tuple(OBSERVERS)} versus {forward.observer_names}."
         )
     position_keys = [
         key for key in forward.params.keys() if key.endswith("vertex_positions")
@@ -849,12 +824,11 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
             f"Expected one shared optimizable mesh; found {position_keys}."
         )
     binary_thresholds = _configure_reduction(forward, configuration)
-    target_tensor = mi.TensorXf(targets.values.copy())
+    target_tensor = mi.TensorXf(targets.copy())
 
-    initial_loss, initial_source_losses, initial_curves = _evaluate(
+    initial_loss, initial_curves = _evaluate(
         forward,
-        targets.values,
-        targets.group_slices,
+        targets,
         seed=configuration.seed,
         spp=configuration.validation_spp,
     )
@@ -880,11 +854,7 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
     _export_mesh(paths.best_mesh, best_positions, best_faces)
     training_losses: list[float] = []
     validation_history: list[dict[str, Any]] = [
-        {
-            "iteration": 0,
-            "loss": initial_loss,
-            "source_losses": initial_source_losses,
-        }
+        {"iteration": 0, "loss": initial_loss}
     ]
     validation_checks_without_improvement = 0
     iterations_completed = 0
@@ -896,7 +866,6 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
                 "kind": "validation",
                 "iteration": 0,
                 "loss": initial_loss,
-                "source_losses": initial_source_losses,
                 "best": True,
             },
         )
@@ -917,7 +886,6 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
                 frames,
                 forward.reduction_function,
                 target_tensor,
-                targets.group_slices,
             )
             dr.eval(loss)
             loss_value = float(np.asarray(loss).reshape(-1)[0])
@@ -962,10 +930,9 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
                 _export_mesh(checkpoint_path, _positions_numpy(forward), faces)
 
             if should_validate:
-                validation_loss, source_losses, _ = _evaluate(
+                validation_loss, _ = _evaluate(
                     forward,
-                    targets.values,
-                    targets.group_slices,
+                    targets,
                     seed=configuration.seed,
                     spp=configuration.validation_spp,
                 )
@@ -983,20 +950,14 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
                     "kind": "validation",
                     "iteration": iteration,
                     "loss": validation_loss,
-                    "source_losses": source_losses,
                     "best": improved,
                 }
                 validation_history.append(
-                    {
-                        "iteration": iteration,
-                        "loss": validation_loss,
-                        "source_losses": source_losses,
-                    }
+                    {"iteration": iteration, "loss": validation_loss}
                 )
                 _append_history(history_file, validation_entry)
                 print(
-                    f"  validation_loss={validation_loss:.8f}, "
-                    f"source_losses={source_losses}, best={improved}"
+                    f"  validation_loss={validation_loss:.8f}, best={improved}"
                 )
                 if (
                     configuration.early_stop_patience > 0
@@ -1072,10 +1033,9 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
         configuration,
         binary_thresholds=binary_thresholds,
     )
-    final_loss, final_source_losses, final_curves = _evaluate(
+    final_loss, final_curves = _evaluate(
         final_forward,
-        targets.values,
-        targets.group_slices,
+        targets,
         seed=configuration.seed,
         spp=configuration.validation_spp,
     )
@@ -1091,7 +1051,6 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
     )
 
     reference_loss = None
-    reference_source_losses = None
     reference_available = False
     if configuration.evaluate_reference:
         reference_path = get_model_stl_path(configuration.model_num)
@@ -1110,10 +1069,9 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
             configuration,
             binary_thresholds=binary_thresholds,
         )
-        reference_loss, reference_source_losses, _ = _evaluate(
+        reference_loss, _ = _evaluate(
             reference_forward,
-            targets.values,
-            targets.group_slices,
+            targets,
             seed=configuration.seed,
             spp=configuration.validation_spp,
         )
@@ -1128,10 +1086,10 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
         dr.flush_malloc_cache()
 
     plot_lightcurve_comparison(
-        targets.values,
+        targets,
         initial_curves,
         final_curves,
-        targets.observer_names,
+        tuple(OBSERVERS),
         ("HAC target", "Initial shape", "Optimized shape"),
         paths.lightcurve_plot,
         title=(
@@ -1149,10 +1107,10 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
     )
     np.savez_compressed(
         paths.curves,
-        target=targets.values,
+        target=targets,
         initial=initial_curves,
         best=final_curves,
-        observer_names=np.asarray(targets.observer_names),
+        observer_names=np.asarray(tuple(OBSERVERS)),
     )
 
     movie_artifacts: dict[str, str] = {}
@@ -1167,11 +1125,7 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
     summary = {
         "configuration": asdict(configuration),
         "model_num": configuration.model_num,
-        "observer_names": targets.observer_names,
-        "observer_group_slices": {
-            source: [group_slice.start, group_slice.stop]
-            for source, group_slice in targets.group_slices.items()
-        },
+        "observer_names": tuple(OBSERVERS),
         "n_phases": n_phases,
         "projection": PROJECTION,
         "integrator": INTEGRATOR,
@@ -1203,14 +1157,11 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
         "face_count": len(best_faces),
         "iterations_completed": iterations_completed,
         "initial_validation_loss": initial_loss,
-        "initial_source_losses": initial_source_losses,
         "best_iteration": best_iteration,
         "best_validation_loss": best_loss,
         "final_validation_loss": final_loss,
-        "final_source_losses": final_source_losses,
         "checkpoint_reconstruction": checkpoint_reconstruction,
         "reference_loss": reference_loss,
-        "reference_source_losses": reference_source_losses,
         "training_loss_history": training_losses,
         "validation_history": validation_history,
         "binary_thresholds": (
@@ -1218,7 +1169,7 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
             if binary_thresholds is None
             else {
                 name: float(binary_thresholds[index])
-                for index, name in enumerate(targets.observer_names)
+                for index, name in enumerate(OBSERVERS)
             }
         ),
         "constraint": {

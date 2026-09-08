@@ -4,7 +4,6 @@ Only supports the `direct` integrator (orthographic assumption).
 """
 
 import argparse
-import copy
 import datetime
 import json
 import math
@@ -31,8 +30,6 @@ class RunConfiguration:
     model_num: int
     data_source: DataSource
     curve_type: CurveType
-    bsdf_json: Path | None
-    bsdf_name: str | None
     initial_mesh: Path | None
     output_dir: Path | None
     variant: str
@@ -133,15 +130,6 @@ def parse_args(argv: Sequence[str] | None = None) -> RunConfiguration:
         default="intensity",
     )
     parser.add_argument(
-        "--bsdf-json",
-        type=Path,
-        help="fixed Mitsuba BSDF dictionary or BSDF trial-list JSON",
-    )
-    parser.add_argument(
-        "--bsdf-name",
-        help="entry name when --bsdf-json contains multiple trial configurations",
-    )
-    parser.add_argument(
         "--initial-mesh",
         type=Path,
         help="optional warm-start mesh; otherwise construct an ellipsoid",
@@ -229,8 +217,6 @@ def parse_args(argv: Sequence[str] | None = None) -> RunConfiguration:
         parser.error("--checkpoint-interval must be non-negative")
     if args.phases is not None and args.phases <= 0:
         parser.error("--phases must be positive")
-    if args.bsdf_name is not None and args.bsdf_json is None:
-        parser.error("--bsdf-name requires --bsdf-json")
     if args.evaluate_reference and args.model_num > 3:
         parser.error("--evaluate-reference is only available for models 1-3")
 
@@ -238,8 +224,6 @@ def parse_args(argv: Sequence[str] | None = None) -> RunConfiguration:
         model_num=args.model_num,
         data_source=args.data_source,
         curve_type=args.curve_type,
-        bsdf_json=args.bsdf_json,
-        bsdf_name=args.bsdf_name,
         initial_mesh=args.initial_mesh,
         output_dir=args.output_dir,
         variant=args.variant,
@@ -313,47 +297,6 @@ def _resolve_output_dir(configuration: RunConfiguration) -> Path:
     )
 
 
-def _load_bsdf(configuration: RunConfiguration) -> dict[str, Any] | None:
-    if configuration.bsdf_json is None:
-        return None
-    path = configuration.bsdf_json
-    if not path.is_file():
-        raise FileNotFoundError(f"BSDF JSON not found: {path}")
-    payload = json.loads(path.read_text())
-    if isinstance(payload, dict) and "type" in payload:
-        return copy.deepcopy(payload)
-    if isinstance(payload, dict) and isinstance(payload.get("bsdf"), dict):
-        if configuration.bsdf_name not in (None, payload.get("name")):
-            raise ValueError(
-                f"BSDF entry {configuration.bsdf_name!r} is not present in {path}."
-            )
-        return copy.deepcopy(payload["bsdf"])
-    if isinstance(payload, list):
-        entries = [entry for entry in payload if isinstance(entry, dict)]
-        if configuration.bsdf_name is None:
-            if len(entries) != 1:
-                raise ValueError(
-                    f"{path} contains {len(entries)} entries; select one with --bsdf-name."
-                )
-            entry = entries[0]
-        else:
-            matches = [
-                entry
-                for entry in entries
-                if entry.get("name") == configuration.bsdf_name
-            ]
-            if len(matches) != 1:
-                raise ValueError(
-                    f"Expected one BSDF named {configuration.bsdf_name!r} in {path}; "
-                    f"found {len(matches)}."
-                )
-            entry = matches[0]
-        if not isinstance(entry.get("bsdf"), dict):
-            raise ValueError(f"Selected entry in {path} has no BSDF dictionary.")
-        return copy.deepcopy(entry["bsdf"])
-    raise ValueError(f"{path} must contain a Mitsuba BSDF dictionary or trial list.")
-
-
 def _prepare_initial_mesh(
     configuration: RunConfiguration,
     cylinder_radius: float,
@@ -386,7 +329,6 @@ def _prepare_initial_mesh(
 def _build_forward(
     mesh_path: Path,
     configuration: RunConfiguration,
-    bsdf: Mapping[str, Any] | None,
     *,
     n_phases: int,
     width: int | None = None,
@@ -408,7 +350,6 @@ def _build_forward(
             spp=configuration.spp if spp is None else spp,
         ),
         normalize_mesh=False,
-        bsdf=bsdf,
         integrator=INTEGRATOR,
         projection=PROJECTION,
     )
@@ -596,7 +537,6 @@ def _save_diagnostic_views(
     mesh_path: Path,
     output_path: Path,
     configuration: RunConfiguration,
-    bsdf: Mapping[str, Any] | None,
     *,
     title: str,
 ) -> None:
@@ -618,7 +558,6 @@ def _save_diagnostic_views(
             spp=configuration.validation_spp,
         ),
         normalize_mesh=False,
-        bsdf=bsdf,
         projection=PROJECTION,
         integrator=INTEGRATOR,
     )
@@ -637,7 +576,6 @@ def _save_diagnostic_views(
 def _movie_frames(
     mesh_path: Path,
     configuration: RunConfiguration,
-    bsdf: Mapping[str, Any] | None,
 ):
     from hac.constants import OBSERVERS
     from hac.mitsuba.forward import ForwardModel
@@ -663,7 +601,6 @@ def _movie_frames(
             spp=configuration.movie_spp,
         ),
         normalize_mesh=False,
-        bsdf=bsdf,
         projection=PROJECTION,
         integrator=INTEGRATOR,
     )
@@ -675,13 +612,12 @@ def _movie_frames(
 def _render_movies(
     paths: RunPaths,
     configuration: RunConfiguration,
-    bsdf: Mapping[str, Any] | None,
     reference_available: bool,
 ) -> dict[str, str]:
     from hac.mitsuba.visualize import write_movie
 
-    initial = _movie_frames(paths.initial_mesh, configuration, bsdf)
-    best = _movie_frames(paths.best_mesh, configuration, bsdf)
+    initial = _movie_frames(paths.initial_mesh, configuration)
+    best = _movie_frames(paths.best_mesh, configuration)
     panels = [initial, best]
     write_movie(paths.initial_movie, initial, configuration.movie_fps)
     write_movie(paths.best_movie, best, configuration.movie_fps)
@@ -693,7 +629,6 @@ def _render_movies(
         reference = _movie_frames(
             paths.normalized_reference_mesh,
             configuration,
-            bsdf,
         )
         panels.insert(0, reference)
         write_movie(paths.reference_movie, reference, configuration.movie_fps)
@@ -711,6 +646,7 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
     from hac.constants import MODEL_BASE_RADII, OBSERVERS
     from hac.data import get_model_stl_path, prepare_lightcurve_targets
     from hac.mesh import normalize_mesh_to_challenge_cylinder
+    from hac.mitsuba.scene import DEFAULT_BSDF
     from hac.visualize import plot_lightcurve_comparison, plot_optimization_loss
 
     output_dir = _resolve_output_dir(configuration)
@@ -720,7 +656,6 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
     start_time = time.perf_counter()
 
     cylinder_radius = MODEL_BASE_RADII[configuration.model_num]
-    bsdf = _load_bsdf(configuration)
     targets = prepare_lightcurve_targets(
         model_num=configuration.model_num,
         data_source=configuration.data_source,
@@ -747,9 +682,7 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
     initial_mesh = _prepare_initial_mesh(configuration, cylinder_radius)
     initial_mesh.export(paths.initial_mesh)
 
-    forward = _build_forward(
-        paths.initial_mesh, configuration, bsdf, n_phases=n_phases
-    )
+    forward = _build_forward(paths.initial_mesh, configuration, n_phases=n_phases)
     if tuple(forward.observer_names) != targets.observer_names:
         raise RuntimeError(
             "Target/render observer order differs: "
@@ -777,7 +710,6 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
         paths.initial_mesh,
         paths.initial_views,
         configuration,
-        bsdf,
         title=f"Model {configuration.model_num}: initial shape",
     )
 
@@ -953,9 +885,7 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
     del training_step
     del forward
     dr.flush_malloc_cache()
-    final_forward = _build_forward(
-        paths.best_mesh, configuration, bsdf, n_phases=n_phases
-    )
+    final_forward = _build_forward(paths.best_mesh, configuration, n_phases=n_phases)
     _configure_reduction(
         final_forward,
         configuration,
@@ -976,7 +906,6 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
         paths.best_mesh,
         paths.best_views,
         configuration,
-        bsdf,
         title=f"Model {configuration.model_num}: optimized shape",
     )
 
@@ -993,7 +922,6 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
         reference_forward = _build_forward(
             paths.normalized_reference_mesh,
             configuration,
-            bsdf,
             n_phases=n_phases,
         )
         _configure_reduction(
@@ -1013,7 +941,6 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
             paths.normalized_reference_mesh,
             paths.reference_views,
             configuration,
-            bsdf,
             title=f"Model {configuration.model_num}: reference shape",
         )
         del reference_forward
@@ -1052,7 +979,6 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
         movie_artifacts = _render_movies(
             paths,
             configuration,
-            bsdf,
             reference_available,
         )
 
@@ -1071,7 +997,7 @@ def run(configuration: RunConfiguration) -> dict[str, Any]:
         "frozen_training": freeze_training,
         "frozen_training_recordings": frozen_training_recordings,
         "shared_mesh_parameter": final_forward.position_key,
-        "shared_bsdf": bsdf,
+        "shared_bsdf": DEFAULT_BSDF,
         "vertex_count": len(best_positions),
         "face_count": len(faces),
         "iterations_completed": iterations_completed,

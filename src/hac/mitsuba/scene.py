@@ -26,6 +26,15 @@ PERSPECTIVE_FAR_CLIP = 10_000.0
 
 Projection = Literal["orthographic", "perspective"]
 
+# Default surface material, mirrors workspaces/jeppe/optimize_shape/bsdf.json.
+DEFAULT_BSDF: dict[str, Any] = {
+    "type": "roughplastic",
+    "nonlinear": False,
+    "alpha": 0.47,
+    "int_ior": 1.55,
+    "diffuse_reflectance": {"type": "rawconstant", "value": 1.0},
+}
+
 
 @dataclass(frozen=True, slots=True)
 class RenderingSettings:
@@ -305,17 +314,7 @@ def _load_batch_scene(
         },
     }
 
-    mesh_bsdf = (
-        {
-            "type": "diffuse",
-            "reflectance": {
-                "type": "rawconstant",
-                "value": 1.0,
-            },
-        }
-        if bsdf is None
-        else copy.deepcopy(dict(bsdf))
-    )
+    mesh_bsdf = copy.deepcopy(DEFAULT_BSDF if bsdf is None else dict(bsdf))
 
     scene = mi.load_dict(
         {
@@ -390,8 +389,9 @@ def make_batch_scene(
             supplies the edge-aware silhouette gradients that geometry
             optimization needs under perspective). An explicit value always
             wins, e.g. ``{"type": "prb", "max_depth": 2}``.
-        bsdf: Optional Mitsuba BSDF plugin dictionary. Defaults to the existing
-            unit-diffuse material.
+        bsdf: Optional Mitsuba BSDF plugin dictionary. Defaults to
+            ``DEFAULT_BSDF`` (a roughplastic material; see
+            workspaces/jeppe/optimize_shape/bsdf.json).
         projection: Camera projection used by every batch sensor.
         orthographic_view_scale_override: Optional shared framing scale. The
             same scale determines perspective FOV when projection is perspective.

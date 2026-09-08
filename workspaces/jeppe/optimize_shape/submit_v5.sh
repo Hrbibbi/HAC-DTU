@@ -1,6 +1,6 @@
 #!/bin/bash
 #BSUB -q c47511
-#BSUB -J dtu-hac-optimize-shape-v5
+#BSUB -J dtu-hac-optimize-shape-v5[1-10]
 #BSUB -n 12
 #BSUB -W 08:00
 #BSUB -R 'span[hosts=1]'
@@ -12,7 +12,7 @@
 # optimize_shape_v5: orthographic + `direct` integrator only (see the module
 # docstring for why `direct` is free relative to `direct_projective` here).
 #
-# Submit from this directory so `bsdf.json` resolves and the log dir exists:
+# Submit from this directory so the log dir exists:
 #     cd workspaces/jeppe/optimize_shape && mkdir -p logs && bsub < submit_v5.sh
 
 set -euo pipefail
@@ -30,18 +30,19 @@ echo "Running job ${LSB_JOBID:-?}[${LSB_JOBINDEX:-0}] on $(hostname)"
 # every native frame (~841 real intensity, 360 blender) - 841 phases means a
 # ~23.5k-sensor batch scene, far heavier per iteration.
 #
+# The surface material is fixed to hac.mitsuba.scene.DEFAULT_BSDF (roughplastic,
+# mirrors bsdf.json); there is no longer a --bsdf-json option.
+#
 # Every value below is the script default made explicit, except:
 #   --data-source real          (default: simulated)
 #   --phases 360                 (default: every native frame)
 #   --initial-face-count 250     (default: 2500)
-#   --bsdf-json bsdf.json        (default: none / unit diffuse)
 #   --evaluate-reference         (default: off; models 1-3 only, gives the
 #                                 reference-shape forward MSE floor)
 uv run python optimize_shape_v5.py \
     1 \
     --data-source real \
     --curve-type intensity \
-    --bsdf-json bsdf.json \
     --variant cuda_ad_mono \
     --cuda-device 0 \
     --phases 360 \

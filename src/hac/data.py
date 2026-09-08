@@ -1,10 +1,16 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 import pandas as pd
+from numpy.typing import NDArray
 
 from hac.constants import BASE_RADII, CHALLENGE_DATA_DIR
+
+DataOrigin = Literal["real", "simulated"]
+CurveType = Literal["binary", "intensity"]
 
 
 def get_model_folder(model_num: int) -> Path:
@@ -55,12 +61,8 @@ class Dataset:
     """
 
     model_num: int  # The model number (1-10)
-    origin: Literal[
-        "real", "simulated"
-    ]  # Whether the data is from camera setup (real) or Blender simulation (simulated)
-    curve_type: Literal[
-        "binary", "intensity"
-    ]  # Whether the data is binary (0/1) or intensity (0-255)
+    origin: DataOrigin  # Camera setup (real) or Blender simulation.
+    curve_type: CurveType  # Binary (0/1) or intensity (0-255).
 
     data: pd.DataFrame  # The light curve data, with standardized index and columns
     base_radius: float
@@ -82,8 +84,8 @@ class Dataset:
 
 def load_data(
     model_num: int,
-    origin: Literal["real", "simulated"],
-    curve_type: Literal["binary", "intensity"],
+    origin: DataOrigin,
+    curve_type: CurveType,
 ) -> Dataset:
     model_dir = get_model_folder(model_num)
 
@@ -152,4 +154,84 @@ def load_data(
         curve_type=curve_type,
         data=data,
         base_radius=BASE_RADII[model_num - 1],
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedLightcurves:
+    """Mean-normalized targets in the same observer order as ``ForwardModel``."""
+
+    values: NDArray[np.float32]
+    observer_names: tuple[str, ...]
+    group_slices: dict[str, slice]
+    n_phases: int  # number of frames kept; render this many phases to match
+
+
+def _subsample_indices(n_native: int, n_phases: int) -> NDArray[np.intp]:
+    """
+    Pick ``n_phases`` native frame indices without averaging or interpolation.
+    """
+    if not 1 <= n_phases <= n_native:
+        raise ValueError(
+            f"n_phases must be in [1, {n_native}] (native frame count); "
+            f"got {n_phases}."
+        )
+    return np.floor(
+        np.arange(n_phases, dtype=np.float64) * n_native / n_phases
+    ).astype(np.intp)
+
+
+def prepare_lightcurve_targets(
+    model_num: int,
+    data_source: DataOrigin,
+    curve_type: CurveType,
+    n_phases: int | None = None,
+    observer_names: Sequence[str] | None = None,
+) -> PreparedLightcurves:
+    """
+    Load and mean-normalize one source's HAC curves.
+    """
+    dataset = load_data(
+        model_num=model_num,
+        origin=data_source,
+        curve_type=curve_type,
+    )
+    selected_names = (
+        tuple(dataset.data.columns)
+        if observer_names is None
+        else tuple(observer_names)
+    )
+    if not selected_names:
+        raise ValueError("observer_names must contain at least one observer.")
+    missing = [name for name in selected_names if name not in dataset.data.columns]
+    if missing:
+        raise ValueError(
+            f"Observers {missing} are missing from model {model_num} "
+            f"{data_source} data."
+        )
+
+    block = np.stack(
+        [dataset.data[name].to_numpy() for name in selected_names]
+    ).astype(np.float32)
+    if not np.all(np.isfinite(block)):
+        raise ValueError(
+            f"Model {model_num} {data_source} {curve_type} curves contain "
+            "non-finite samples."
+        )
+    if n_phases is not None:
+        block = block[:, _subsample_indices(block.shape[1], n_phases)]
+
+    means = np.mean(block, axis=1, keepdims=True)
+    if not np.all(np.isfinite(means)) or np.any(means == 0.0):
+        raise ValueError(
+            f"Cannot mean-normalize model {model_num} {data_source} "
+            f"{curve_type} curves."
+        )
+    block /= means
+
+    return PreparedLightcurves(
+        values=block,
+        observer_names=tuple(selected_names),
+        group_slices={data_source: slice(0, len(block))},
+        n_phases=block.shape[1],
     )

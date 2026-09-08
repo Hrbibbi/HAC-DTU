@@ -1,0 +1,10 @@
+{
+  "type": "roughplastic",
+  "nonlinear": false,
+  "alpha": 0.47,
+  "int_ior": 1.55,
+  "diffuse_reflectance": {
+    "type": "rawconstant",
+    "value": 1.0
+  }
+}

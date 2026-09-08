@@ -4,6 +4,8 @@ from collections.abc import Callable, Mapping
 from typing import Any, TypeVar
 
 import drjit as dr
+import numpy as np
+from skimage.filters import threshold_otsu
 
 from hac.mitsuba.mesh import MitsubaMesh
 from hac.mitsuba.patch import mi
@@ -212,7 +214,7 @@ def reduction_binary_hard(frames: RenderedFramesT, threshold: float) -> Lightcur
 
 def reduction_binary_smooth(
     frames: RenderedFramesT,
-    threshold: float,
+    threshold: float | RenderedFramesT,
     temperature: float = 0.01,
 ) -> LightcurvesT:
     """
@@ -222,6 +224,10 @@ def reduction_binary_smooth(
     but as this is cumbersome to make differentiable, we approximate this
     with a fixed threshold that can be calculated initially or
     at discrete points in the optimisation.
+
+    `threshold` is either a scalar or a per-observer array broadcastable over
+    the frame axes, e.g. `calibrate_binary_thresholds` reshaped to
+    (observer, 1, 1, 1, 1).
 
     Temperature controls the sharpness of the transition.
     Lower temperatures give sharper transitions.
@@ -233,6 +239,28 @@ def reduction_binary_smooth(
     )
     lightcurves = dr.sum(thresholded_frames, axis=(2, 3, 4))
     return normalize_lightcurves(lightcurves)
+
+
+def calibrate_binary_thresholds(frames: RenderedFramesT) -> np.ndarray:
+    """Calibrate one fixed Otsu threshold per observer from phase zero."""
+    array = np.asarray(frames)
+    if array.ndim != 5 or array.shape[-1] != 1 or 0 in array.shape:
+        raise ValueError(
+            "frames must have shape (observer, phase, y, x, 1) with positive "
+            f"dimensions; got {array.shape}."
+        )
+    if not np.all(np.isfinite(array)):
+        raise ValueError("frames contain non-finite values.")
+
+    thresholds = np.empty(array.shape[0], dtype=np.float32)
+    for observer_index in range(array.shape[0]):
+        phase_zero = array[observer_index, 0, :, :, 0]
+        thresholds[observer_index] = (
+            float(phase_zero.max())
+            if phase_zero.max() <= phase_zero.min()
+            else float(threshold_otsu(phase_zero))
+        )
+    return thresholds
 
 
 def reduction_binary_otsu_smooth(

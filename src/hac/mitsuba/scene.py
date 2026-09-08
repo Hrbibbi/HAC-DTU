@@ -282,14 +282,18 @@ def _load_batch_scene(
         },
     }
 
+    # Orthographic renders carry no projective silhouette term, so `direct` gives
+    # the same shape gradient as `direct_projective` at lower cost; perspective
+    # still needs `direct_projective` for edge-aware silhouette gradients.
+    # See workspaces/jeppe/overview/overview.typ -> "Update: Orthographic Assumption".
+    default_integrator = (
+        {"type": "direct"}
+        if projection == "orthographic"
+        else {"type": "direct_projective"}
+    )
     scene_dict: dict[str, Any] = {
         "type": "scene",
-        # direct_projective supports the edge-aware silhouette gradients that
-        # geometry optimization needs. BSDF-only optimization has no such
-        # requirement and can use a cheaper, lower-variance integrator instead.
-        "integrator": dict(integrator)
-        if integrator is not None
-        else {"type": "direct_projective"},
+        "integrator": dict(integrator) if integrator is not None else default_integrator,
         "sensor": batch_sensor,
         "sun": {
             "type": "directional",
@@ -381,10 +385,11 @@ def make_batch_scene(
             separation between phase centers. Larger mesh-based exclusion
             distances still take precedence.
         integrator: Mitsuba integrator plugin dict. Defaults to
-            ``{"type": "direct_projective"}``, which is required for geometry
-            (silhouette) gradients. Optimizations that never differentiate
-            shape parameters can pass a cheaper integrator, e.g.
-            ``{"type": "prb", "max_depth": 2}``.
+            ``{"type": "direct"}`` for orthographic scenes and
+            ``{"type": "direct_projective"}`` for perspective scenes (the latter
+            supplies the edge-aware silhouette gradients that geometry
+            optimization needs under perspective). An explicit value always
+            wins, e.g. ``{"type": "prb", "max_depth": 2}``.
         bsdf: Optional Mitsuba BSDF plugin dictionary. Defaults to the existing
             unit-diffuse material.
         projection: Camera projection used by every batch sensor.

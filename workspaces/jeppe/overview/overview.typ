@@ -326,7 +326,97 @@ $
   "FOV"_y = 2 atan(H / (2 f)).
 $
 
-= Ray-Tracing <sec:ray_tracing>
+// = A Better Forward Model <sec:better_forward_model>
+
+// While the experimental setup for both the camera and simulated data does satisfy the far-field assumption for the Sun, we have found in @sec:inferring_observer_position that the far-field assumption for the observer only holds for the real camera, not the simulated data, which must instead be rendered with a perspective camera.
+
+// If we let $𝒮_θ$ denote the asteroid surface at rotational phase $θ$ and consider a point
+// $vv(x) ∈ 𝒮_θ$ with outward unit normal $vv(n)(vv(x))$ with $vv(c)$ being the
+// camera centre, we find the direction from the surface point toward the camera is given by
+// $
+//   vvh(E)(vv(x))
+//   = (vv(c) - vv(x)) / norm(vv(c) - vv(x))_2.
+// $
+// The direction toward the distant Sun remains the constant vector
+// $vvh(E)_0$, as before. Define
+// $
+//     μ (vv(x)) & = [vv(n)(vv(x)) ⋅ vvh(E)(vv(x))]_+, \
+//   μ_0 (vv(x)) & = [vv(n)(vv(x)) ⋅ vvh(E)_0]_+,
+// $
+// where $[a]_+ = max(a, 0)$.
+
+// Let $χ_"sun" (vv(x))$ indicate that the ray from $vv(x)$ toward the Sun is
+// unoccluded. Under direct illumination, the radiance leaving the surface toward
+// the camera is
+// $
+//   L_"o" (vv(x), vvh(E))
+//   = χ_"sun" (vv(x))
+//   E_"sun"
+//   f_"r" (vvh(E)_0, vvh(E); vv(x))
+//   μ_0 (vv(x)),
+// $ <eq:outgoing_radiance>
+// where $E_"sun"$ is the incident solar irradiance and $f_"r"$ is the surface
+// reflectance law. For a diffuse surface of albedo $ϖ$,
+// $f_"r" = ϖ / π$.
+
+// == Camera and Image Formation
+
+// Let $𝒟$ denote the sensor domain. Each sensor position $vv(q) ∈ 𝒟$ defines a
+// camera ray. Denote the first intersection of this ray with $𝒮_φ$ by
+// $vv(x)_φ (vv(q))$. The rendered image is
+// $
+//   I_φ (vv(q)) =
+//   cases(
+//     L_"o" (vv(x)_φ (vv(q)), vvh(E)) & wide "ray intersects asteroid",
+//     0 & wide "otherwise",
+//   ).
+// $ <eq:rendered_image>
+
+// Selecting the first intersection accounts for visibility from the camera.
+// Illumination visibility is determined separately by the shadow ray represented
+// by $χ_"sun"$.
+
+// The predicted light-curve intensity at phase $φ$ is the integrated image
+// intensity:
+// $
+//   L(φ)
+//   = integral_(𝒟) I_φ (vv(q)) dif vv(q)
+//   ≈ sum_(p ∈ "pixels") I_φ [p].
+// $ <eq:image_brightness>
+
+// Because the supplied light curves contain only relative intensities, the
+// predicted curve is divided by its phase average:
+// $
+//   tilde(L)(φ_i)
+//   = L(φ_i)
+//   / ((1 / N) sum_(j=1)^N L(φ_j)).
+// $ <eq:normalised_brightness>
+
+// == Relation to the Far-Field Model
+
+// Equivalently, the image integral can be written as a surface integral:
+// $
+//   L(φ)
+//   = integral_(𝒮_φ)
+//   χ_"obs" χ_"sun"
+//   E_"sun" f_"r" μ_0 J_"cam"
+//   dif A,
+// $
+// where $χ_"obs"$ denotes visibility from the camera and $J_"cam"$ is the
+// area factor induced by the camera projection.
+
+// For an orthographic camera, $J_"cam" ∝ μ$. With Lambertian reflection, the
+// integrand is therefore proportional to
+// $
+//   ϖ μ μ_0,
+// $
+// which recovers the simple Lambert scattering law in
+// @sec:simple_forward_model. For a perspective camera, $J_"cam"$ additionally
+// depends on the position and depth of the surface point. Consequently, different
+// parts of the asteroid do not contribute as though they were observed under a
+// single parallel projection.
+
+= Rendering <sec:rendering>
 
 Several algorithms exist, where it should be noted that we only require a relatively simple ray-tracing algorithm here due to the many simplifications that are possible here as opposed to the general case. For instance, we may assume monochromaticity and ignore atmospheric refraction if we assume the observer is unobstructed by an atmosphere. See also @sec:conclusions_2026_06_19.
 
@@ -384,6 +474,10 @@ Even if we were able to incorporate the camera position into the optimisation, t
 See #link("https://teams.microsoft.com/l/message/19:Ahm9wVNt8Tp4g3ZwMmA2b8xUaKykOoriOH_wpebIM-Q1@thread.tacv2/1785877381328?tenantId=f251f123-c9ce-448e-9277-34bb285911d9&groupId=0129ab18-d614-45eb-8a03-b368c443abaa&parentMessageId=1785877381328&teamName=Helsinki%20Asteroid%20Challenge%202026&channelName=General&createdTime=1785877381328", "discussion on Teams") for more details.
 
 As a best-effort estimate, we can infer the camera position from the simulated videos of the first 3 models. According to the organisers documentation, care has been taken to make the distance and object scaling consistent between the blender simulated video and the real video. Since the videos are not angle synchronised and doing so would be a bit of effort, we only infer the camera positions from the Blender data.
+
+== Update: Orthographic Assumption
+
+The data has been updated to use orthographic rendering. In this case, the silhouette-based `direct_projective` integrator is equivalent to the `direct` integrator, but with extra steps (including invalidation of the cached GPU kernel!), so we can now use the `direct` integrator for the orthographic case, which is much faster.
 
 = Other
 

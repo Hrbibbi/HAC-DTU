@@ -4,6 +4,9 @@ This repostiory contains submission(s) to the Helsinki Asteroid Challenge by the
 
 The data is too large to comfortably fit within the Git repository.
 
+## Code to run:
+Under submission files the small_ball.py file
+
 ## Developer Guide
 - Implement things that have common use in the library at `src/hac/`
     - Try to keep this relatively neat and use pull requests for any controversial changes
